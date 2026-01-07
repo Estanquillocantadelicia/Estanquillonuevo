@@ -893,8 +893,21 @@
 
 .productos-table {
     width: 100%;
-    min-width: 1800px;
+    min-width: 1850px;
     border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.header-checkbox {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #007AFF;
+    transition: all 0.2s ease;
+}
+
+.header-checkbox:hover {
+    transform: scale(1.1);
 }
 
 .productos-table thead {

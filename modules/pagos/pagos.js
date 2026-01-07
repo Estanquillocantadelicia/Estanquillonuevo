@@ -147,6 +147,8 @@ class PagosModule {
     }
 
     setupEventListeners() {
+        console.log('👂 Configurando event listeners de pagos...');
+        
         // Tabs
         document.querySelectorAll('.pagos-tab').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -154,13 +156,19 @@ class PagosModule {
             });
         });
 
-        // Botones de movimiento
-        document.getElementById('btn-nuevo-ingreso')?.addEventListener('click', () => {
-            this.abrirModalMovimiento('ingreso');
-        });
-
-        document.getElementById('btn-nuevo-egreso')?.addEventListener('click', () => {
-            this.abrirModalMovimiento('egreso');
+        // 🛠️ FIX: Delegación de eventos para botones de movimiento
+        // Esto asegura que funcionen incluso si el DOM se regenera
+        document.addEventListener('click', (e) => {
+            const btnIngreso = e.target.closest('#btn-nuevo-ingreso');
+            const btnEgreso = e.target.closest('#btn-nuevo-egreso');
+            
+            if (btnIngreso) {
+                console.log('📥 Click en Nuevo Ingreso');
+                this.abrirModalMovimiento('ingreso');
+            } else if (btnEgreso) {
+                console.log('📤 Click en Nuevo Egreso');
+                this.abrirModalMovimiento('egreso');
+            }
         });
 
         // Calendario
@@ -199,6 +207,18 @@ class PagosModule {
         const fechaPagoInput = document.getElementById('fecha-pago-nomina');
         if (fechaPagoInput) {
             fechaPagoInput.value = new Date().toISOString().split('T')[0];
+        }
+    }
+
+    cerrarModal(modalId) {
+        const modal = document.getElementById(modalId);
+        if (modal) {
+            modal.classList.remove('active');
+            // Limpiar formulario si es el de movimiento
+            if (modalId === 'modal-movimiento') {
+                const form = document.getElementById('form-movimiento');
+                if (form) form.reset();
+            }
         }
     }
 
@@ -359,17 +379,23 @@ class PagosModule {
 
         const formatter = window.currencyFormatter;
 
-        document.getElementById('total-ingresos').textContent = formatter 
-            ? formatter.format(totalIngresos) 
-            : '$' + totalIngresos.toFixed(2);
+        if (document.getElementById('total-ingresos')) {
+            document.getElementById('total-ingresos').textContent = formatter 
+                ? formatter.format(totalIngresos) 
+                : '$' + totalIngresos.toFixed(2);
+        }
 
-        document.getElementById('total-egresos').textContent = formatter 
-            ? formatter.format(totalEgresos) 
-            : '$' + totalEgresos.toFixed(2);
+        if (document.getElementById('total-egresos')) {
+            document.getElementById('total-egresos').textContent = formatter 
+                ? formatter.format(totalEgresos) 
+                : '$' + totalEgresos.toFixed(2);
+        }
 
-        document.getElementById('total-nomina').textContent = formatter 
-            ? formatter.format(totalNomina) 
-            : '$' + totalNomina.toFixed(2);
+        if (document.getElementById('total-nomina')) {
+            document.getElementById('total-nomina').textContent = formatter 
+                ? formatter.format(totalNomina) 
+                : '$' + totalNomina.toFixed(2);
+        }
 
         // Calcular efectivo total
         this.efectivoTotal = (this.efectivoTotal || 0) + totalIngresos - totalEgresos - totalNomina;
@@ -383,11 +409,15 @@ class PagosModule {
                    fecha.getFullYear() === new Date().getFullYear();
         });
 
-        document.getElementById('pagos-mes').textContent = formatter 
-            ? formatter.format(pagosMes.reduce((sum, m) => sum + m.monto, 0))
-            : '$' + pagosMes.reduce((sum, m) => sum + m.monto, 0).toFixed(2);
+        if (document.getElementById('pagos-mes')) {
+            document.getElementById('pagos-mes').textContent = formatter 
+                ? formatter.format(pagosMes.reduce((sum, m) => sum + m.monto, 0))
+                : '$' + pagosMes.reduce((sum, m) => sum + m.monto, 0).toFixed(2);
+        }
 
-        document.getElementById('total-empleados').textContent = this.usuarios.length;
+        if (document.getElementById('total-empleados')) {
+            document.getElementById('total-empleados').textContent = this.usuarios.length;
+        }
     }
 
     actualizarDisplayEfectivo() {
@@ -986,13 +1016,6 @@ class PagosModule {
                 </tr>
             `;
         }).join('');
-    }
-
-    cerrarModal(modalId) {
-        const modal = document.getElementById(modalId);
-        if (modal) {
-            modal.classList.remove('active');
-        }
     }
 
     showLoading() {

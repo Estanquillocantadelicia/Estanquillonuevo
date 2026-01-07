@@ -1363,25 +1363,29 @@ El sistema continúa funcionando normalmente usando cache local.
             return;
         }
 
-        // ✅ DISCRIMINAR VENTAS POR MÉTODO DE PAGO
-        const efectivoVentas = this.ventas
-            .filter(v => v.metodoPago === 'efectivo' || v.tipoPago === 'efectivo')
-            .reduce((sum, v) => sum + (v.total || 0), 0);
-
-        const tarjetaVentas = this.ventas
-            .filter(v => v.metodoPago === 'tarjeta' || v.tipoPago === 'tarjeta')
-            .reduce((sum, v) => sum + (v.total || 0), 0);
-
-        const transferenciaVentas = this.ventas
-            .filter(v => v.metodoPago === 'transferencia' || v.tipoPago === 'transferencia')
-            .reduce((sum, v) => sum + (v.total || 0), 0);
-
-        const creditoVentas = this.ventas
-            .filter(v => v.metodoPago === 'credito' || v.tipoPago === 'credito')
-            .reduce((sum, v) => sum + (v.total || 0), 0);
 
         // Total de ventas (todos los métodos de pago) - SOLO PARA ESTADÍSTICAS
         const totalVentas = this.ventas.reduce((sum, v) => sum + (v.total || 0), 0);
+
+        // ✅ DISCRIMINAR VENTAS POR MÉTODO DE PAGO
+        // Usar trim() y toLowerCase() para evitar problemas de formato
+        const getMetodo = (v) => (v.metodoPago || v.tipoPago || 'efectivo').toString().toLowerCase().trim();
+
+        const efectivoVentas = this.ventas
+            .filter(v => getMetodo(v) === 'efectivo')
+            .reduce((sum, v) => sum + (v.total || 0), 0);
+
+        const tarjetaVentas = this.ventas
+            .filter(v => getMetodo(v) === 'tarjeta')
+            .reduce((sum, v) => sum + (v.total || 0), 0);
+
+        const transferenciaVentas = this.ventas
+            .filter(v => getMetodo(v) === 'transferencia')
+            .reduce((sum, v) => sum + (v.total || 0), 0);
+
+        const creditoVentas = this.ventas
+            .filter(v => getMetodo(v) === 'credito')
+            .reduce((sum, v) => sum + (v.total || 0), 0);
 
         // Movimientos (ingresos/egresos adicionales)
         const ingresos = this.movimientos
@@ -2518,31 +2522,14 @@ El sistema continúa funcionando normalmente usando cache local.
             // Obtener movimientos del array dentro de la caja
             const movimientos = caja.movimientos || [];
 
-            // Calcular totales por método de pago
-            console.log('💳 Calculando ventas por método de pago:', ventas.map(v => ({
-                folio: v.folio,
-                metodoPago: v.metodoPago,
-                tipoPago: v.tipoPago,
-                total: v.total
-            })));
-
-            const efectivoVentas = ventas
-                .filter(v => (v.metodoPago || v.tipoPago) === 'efectivo')
-                .reduce((sum, v) => sum + (v.total || 0), 0);
-
-            const tarjetaVentas = ventas
-                .filter(v => (v.metodoPago || v.tipoPago) === 'tarjeta')
-                .reduce((sum, v) => sum + (v.total || 0), 0);
-
-            const transferenciaVentas = ventas
-                .filter(v => (v.metodoPago || v.tipoPago) === 'transferencia')
-                .reduce((sum, v) => sum + (v.total || 0), 0);
-
-            const creditoVentas = ventas
-                .filter(v => (v.metodoPago || v.tipoPago) === 'credito')
-                .reduce((sum, v) => sum + (v.total || 0), 0);
-
+            // ✅ CALCULAR TOTALES POR MÉTODO DE PAGO
+            const getMetodo = (v) => (v.metodoPago || v.tipoPago || 'efectivo').toString().toLowerCase().trim();
+            
             const totalVentas = ventas.reduce((sum, v) => sum + (v.total || 0), 0);
+            const efectivoVentas = ventas.filter(v => getMetodo(v) === 'efectivo').reduce((sum, v) => sum + (v.total || 0), 0);
+            const tarjetaVentas = ventas.filter(v => getMetodo(v) === 'tarjeta').reduce((sum, v) => sum + (v.total || 0), 0);
+            const transferenciaVentas = ventas.filter(v => getMetodo(v) === 'transferencia').reduce((sum, v) => sum + (v.total || 0), 0);
+            const creditoVentas = ventas.filter(v => getMetodo(v) === 'credito').reduce((sum, v) => sum + (v.total || 0), 0);
 
             console.log('💰 Totales por método:', {
                 efectivo: efectivoVentas,
@@ -2669,13 +2656,31 @@ El sistema continúa funcionando normalmente usando cache local.
                     <div class="summary-card">
                         <h4>Desglose de Ventas (${ventas.length})</h4>
                         ${ventas.length > 0 ? `
-                        <div style="max-height: 200px; overflow-y: auto;">
-                            ${ventas.map(v => `
-                                <div class="summary-item" style="font-size: 0.9rem;">
-                                    <span>${v.folio} - ${v.cliente?.nombre || 'Público general'}</span>
-                                    <span>${formatter ? formatter.format(v.total) : '$' + v.total.toFixed(2)}</span>
-                                </div>
-                            `).join('')}
+                        <div style="max-height: 250px; overflow-y: auto;">
+                            <table class="data-table" style="font-size: 0.85rem; width: 100%;">
+                                <thead style="position: sticky; top: 0; background: white; z-index: 1;">
+                                    <tr>
+                                        <th style="padding: 8px;">Folio</th>
+                                        <th style="padding: 8px;">Método</th>
+                                        <th style="padding: 8px; text-align: right;">Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${ventas.map(v => `
+                                        <tr>
+                                            <td style="padding: 8px;">${v.folio}</td>
+                                            <td style="padding: 8px;">
+                                                <span class="badge badge-${(v.metodoPago || v.tipoPago) === 'efectivo' ? 'success' : 'warning'}" style="font-size: 0.75rem;">
+                                                    ${v.metodoPago || v.tipoPago || 'efectivo'}
+                                                </span>
+                                            </td>
+                                            <td style="padding: 8px; text-align: right; font-weight: 600;">
+                                                ${formatter ? formatter.format(v.total) : '$' + v.total.toFixed(2)}
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
                         </div>
                         ` : '<p style="text-align: center; color: #6D6D80; margin: 16px 0;">No hay ventas</p>'}
                     </div>

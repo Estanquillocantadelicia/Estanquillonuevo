@@ -85,6 +85,18 @@ class UserMenu {
                 `).join('')}
             </div>
 
+            <!-- Opción de Instalación PWA (Solo visible si es instalable) -->
+            <div id="pwa-install-item" class="user-menu-item" style="display: none; border-top: 1px solid rgba(0,0,0,0.05); margin-top: 5px; padding-top: 12px;">
+                <div class="user-menu-item-icon" style="color: var(--primary-color, #007AFF);">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                </div>
+                <span class="user-menu-item-text" style="font-weight: 600;">Instalar Aplicación</span>
+            </div>
+
             <!-- Separador -->
             <div class="user-menu-divider"></div>
 
@@ -113,6 +125,37 @@ class UserMenu {
             this.trigger.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.toggle();
+            });
+        }
+
+        // Manejo de Instalación PWA
+        const pwaInstallItem = this.menu.querySelector('#pwa-install-item');
+        
+        const updatePwaVisibility = () => {
+            if (window.deferredPrompt && pwaInstallItem) {
+                pwaInstallItem.style.display = 'flex';
+            }
+        };
+
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            window.deferredPrompt = e;
+            updatePwaVisibility();
+        });
+
+        // Verificar si ya teníamos el prompt guardado
+        updatePwaVisibility();
+
+        if (pwaInstallItem) {
+            pwaInstallItem.addEventListener('click', async () => {
+                if (window.deferredPrompt) {
+                    window.deferredPrompt.prompt();
+                    const { outcome } = await window.deferredPrompt.userChoice;
+                    console.log(`Resultado de instalación: ${outcome}`);
+                    window.deferredPrompt = null;
+                    pwaInstallItem.style.display = 'none';
+                }
+                this.close();
             });
         }
 

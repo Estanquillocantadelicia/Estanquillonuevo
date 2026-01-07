@@ -774,6 +774,12 @@ class ComprasModule {
 
         const item = this.pedido[this.itemEditandoPrecios];
         
+        if (!item) {
+            console.error('❌ Item no encontrado en el pedido al guardar precios');
+            this.cerrarModalEditarPrecios();
+            return;
+        }
+        
         // Guardar precios editados temporalmente
         item.preciosEditados = {
             costo: precioCosto,
@@ -971,84 +977,111 @@ class ComprasModule {
             if (!productoDoc.exists) continue;
 
             const producto = productoDoc.data();
-            const cantidad = item.cantidad;
+            const cantidad = parseInt(item.cantidad) || 0;
             const updateData = {};
 
+            // 🛠️ PATRÓN DE VENTAS (PROBADO Y SEGURO): Actualización por reemplazo de array
+            // Basado en modules/ventas/ventas.js para evitar corrupción de nombres
+            
             if (item.tipo === 'simple') {
-                // Actualizar stock
                 const nuevoStock = (producto.stock?.actual || 0) + cantidad;
                 updateData['stock.actual'] = nuevoStock;
 
-                // Actualizar precios si fueron editados
                 if (item.preciosEditados) {
-                    updateData['precio.costo'] = item.preciosEditados.costo;
-                    updateData['precio.publico'] = item.preciosEditados.publico;
-                    updateData['precio.mayorista'] = item.preciosEditados.mayorista;
+                    updateData['precio.costo'] = Number(item.preciosEditados.costo);
+                    updateData['precio.publico'] = Number(item.preciosEditados.publico);
+                    updateData['precio.mayorista'] = Number(item.preciosEditados.mayorista);
                 }
-
                 batch.update(productoRef, updateData);
 
             } else if (item.tipo === 'variante-simple') {
                 const variantesArray = Array.isArray(producto.variantes) 
-                    ? producto.variantes 
+                    ? [...producto.variantes] 
                     : Object.values(producto.variantes || {});
-                const variante = variantesArray[item.varianteIndex];
-                const nuevoStock = (variante.stock?.actual || 0) + cantidad;
+                
+                const vIdx = item.varianteIndex;
+                if (variantesArray[vIdx]) {
+                    const nuevoStock = (variantesArray[vIdx].stock?.actual || 0) + cantidad;
+                    
+                    // Actualizamos el objeto en memoria primero
+                    variantesArray[vIdx].stock = {
+                        ...variantesArray[vIdx].stock,
+                        actual: nuevoStock
+                    };
 
-                // Actualizar stock
-                updateData[`variantes.${item.varianteIndex}.stock.actual`] = nuevoStock;
-
-                // Actualizar precios si fueron editados
-                if (item.preciosEditados) {
-                    updateData[`variantes.${item.varianteIndex}.precio.costo`] = item.preciosEditados.costo;
-                    updateData[`variantes.${item.varianteIndex}.precio.publico`] = item.preciosEditados.publico;
-                    updateData[`variantes.${item.varianteIndex}.precio.mayorista`] = item.preciosEditados.mayorista;
+                    if (item.preciosEditados) {
+                        variantesArray[vIdx].precio = {
+                            ...variantesArray[vIdx].precio,
+                            costo: Number(item.preciosEditados.costo),
+                            publico: Number(item.preciosEditados.publico),
+                            mayorista: Number(item.preciosEditados.mayorista)
+                        };
+                    }
+                    
+                    // Enviamos el array completo para asegurar la integridad de la estructura
+                    batch.update(productoRef, { variantes: variantesArray });
                 }
-
-                batch.update(productoRef, updateData);
 
             } else if (item.tipo === 'variante-opcion') {
                 const variantesArray = Array.isArray(producto.variantes) 
-                    ? producto.variantes 
+                    ? [...producto.variantes] 
                     : Object.values(producto.variantes || {});
-                const variante = variantesArray[item.varianteIndex];
-                const opcionesArray = Array.isArray(variante.opciones) 
-                    ? variante.opciones 
-                    : Object.values(variante.opciones || {});
-                const opcion = opcionesArray[item.opcionIndex];
-                const nuevoStock = (opcion.stock?.actual || 0) + cantidad;
+                
+                const vIdx = item.varianteIndex;
+                const oIdx = item.opcionIndex;
+                
+                if (variantesArray[vIdx]) {
+                    const opcionesArray = Array.isArray(variantesArray[vIdx].opciones) 
+                        ? [...variantesArray[vIdx].opciones] 
+                        : Object.values(variantesArray[vIdx].opciones || {});
+                    
+                    if (opcionesArray[oIdx]) {
+                        const nuevoStock = (opcionesArray[oIdx].stock?.actual || 0) + cantidad;
+                        
+                        opcionesArray[oIdx].stock = {
+                            ...opcionesArray[oIdx].stock,
+                            actual: nuevoStock
+                        };
+                        
+                        variantesArray[vIdx].opciones = opcionesArray;
 
-                // Actualizar stock
-                updateData[`variantes.${item.varianteIndex}.opciones.${item.opcionIndex}.stock.actual`] = nuevoStock;
-
-                // Actualizar precios si fueron editados (los precios están en la variante, no en la opción)
-                if (item.preciosEditados) {
-                    updateData[`variantes.${item.varianteIndex}.precio.costo`] = item.preciosEditados.costo;
-                    updateData[`variantes.${item.varianteIndex}.precio.publico`] = item.preciosEditados.publico;
-                    updateData[`variantes.${item.varianteIndex}.precio.mayorista`] = item.preciosEditados.mayorista;
+                        if (item.preciosEditados) {
+                            variantesArray[vIdx].precio = {
+                                ...variantesArray[vIdx].precio,
+                                costo: Number(item.preciosEditados.costo),
+                                publico: Number(item.preciosEditados.publico),
+                                mayorista: Number(item.preciosEditados.mayorista)
+                            };
+                        }
+                        
+                        batch.update(productoRef, { variantes: variantesArray });
+                    }
                 }
-
-                batch.update(productoRef, updateData);
 
             } else if (item.tipo === 'conversion') {
                 const conversionesArray = Array.isArray(producto.conversiones) 
-                    ? producto.conversiones 
+                    ? [...producto.conversiones] 
                     : Object.values(producto.conversiones || {});
-                const conversion = conversionesArray[item.conversionIndex];
-                const cantidadUnidadBase = cantidad * conversion.cantidad;
-                const nuevoStock = (producto.stock?.actual || 0) + cantidadUnidadBase;
+                
+                const cIdx = item.conversionIndex;
+                if (conversionesArray[cIdx]) {
+                    const cantidadUnidadBase = cantidad * (Number(conversionesArray[cIdx].cantidad) || 1);
+                    const nuevoStock = (producto.stock?.actual || 0) + cantidadUnidadBase;
+                    
+                    updateData['stock.actual'] = nuevoStock;
 
-                // Actualizar stock
-                updateData['stock.actual'] = nuevoStock;
-
-                // Actualizar precios si fueron editados
-                if (item.preciosEditados) {
-                    updateData[`conversiones.${item.conversionIndex}.precio.costo`] = item.preciosEditados.costo;
-                    updateData[`conversiones.${item.conversionIndex}.precio.publico`] = item.preciosEditados.publico;
-                    updateData[`conversiones.${item.conversionIndex}.precio.mayorista`] = item.preciosEditados.mayorista;
+                    if (item.preciosEditados) {
+                        conversionesArray[cIdx].precio = {
+                            ...conversionesArray[cIdx].precio,
+                            costo: Number(item.preciosEditados.costo),
+                            publico: Number(item.preciosEditados.publico),
+                            mayorista: Number(item.preciosEditados.mayorista)
+                        };
+                        updateData['conversiones'] = conversionesArray;
+                    }
+                    
+                    batch.update(productoRef, updateData);
                 }
-
-                batch.update(productoRef, updateData);
             }
         }
 

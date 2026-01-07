@@ -28,44 +28,38 @@ class InventarioModule {
                 throw new Error('Firebase no está inicializado');
             }
 
-            // 2. Crear modales primero
-            await this.ensureModalsExist();
-            console.log('✅ Modales verificados');
-            
-            // 3. Esperar a que el DOM esté completamente actualizado
-            await new Promise(resolve => setTimeout(resolve, 300));
-            
-            // 4. Configurar sistemas que NO dependen de modales
-            this.setupTabsSystem();
-            console.log('✅ Sistema de tabs configurado');
-            
-            // 5. Cargar datos en paralelo
-            console.log('📥 Cargando datos...');
-            await Promise.all([
-                this.loadCategorias(),
-                this.loadProveedores(),
-                this.loadProductos()
+            // 2. Crear modales Y cargar datos EN PARALELO (sin espera innecesaria)
+            const [, dataLoaded] = await Promise.all([
+                this.ensureModalsExist(),
+                Promise.all([
+                    this.loadCategorias(),
+                    this.loadProveedores(),
+                    this.loadProductos()
+                ])
             ]);
-            console.log('✅ Datos cargados:', {
+            console.log('✅ Modales verificados y datos cargados:', {
                 productos: this.productos.length,
                 categorias: this.categorias.length,
                 proveedores: this.proveedores.length
             });
 
-            // 6. Renderizar UI principal
+            // 3. Configurar tabs Y renderizar UI EN PARALELO (sin delays artificiales)
+            this.setupTabsSystem();
             this.populateCategorias();
             this.populateProveedores();
             this.renderProductos();
             this.renderDashboardStats();
             this.aplicarPermisosGraduales();
+            console.log('✅ UI renderizada');
+
+            // 4. Configurar listeners (requestAnimationFrame para no bloquear)
+            requestAnimationFrame(() => {
+                this.setupEventListeners();
+                this.setupSimulacionPedidos();
+                console.log('✅ Event listeners configurados');
+            });
             
-            // 7. Configurar event listeners de modales (después de renderizar)
-            await new Promise(resolve => setTimeout(resolve, 100));
-            this.setupEventListeners();
-            this.setupSimulacionPedidos();
-            console.log('✅ Event listeners configurados');
-            
-            // 8. Activar listeners en tiempo real
+            // 5. Activar listeners en tiempo real (asincrónico, no bloquea)
             this.setupRealtimeListeners();
             
             console.log('✅ Módulo de inventario inicializado correctamente');
@@ -1731,6 +1725,15 @@ class InventarioModule {
         // Mejorar UX de tabla en móvil
         this.setupTableScrollIndicator();
 
+        // Listeners para checkboxes de filas - tiempo real
+        const tableBody = document.getElementById('productos-table-body');
+        if (tableBody) {
+            const checkboxes = tableBody.querySelectorAll('.row-checkbox');
+            checkboxes.forEach(checkbox => {
+                checkbox.addEventListener('change', () => this.updateBulkDeleteButton());
+            });
+        }
+
         // Botones principales - con validación
         const btnNuevoProducto = document.getElementById('btn-nuevo-producto');
         const btnGestionarCategorias = document.getElementById('btn-gestionar-categorias');
@@ -1876,51 +1879,87 @@ class InventarioModule {
             console.log('📦 Cargando productos...');
             if (!window.db) throw new Error('Firebase no disponible');
             
-            let productos = [];
-            
-            // 🚀 OPTIMIZACIÓN: Usar caché para reducir queries a Firebase
+            // 🚀 OPTIMIZACIÓN: Renderizado ultra-veloz
             if (window.cacheManager) {
-                productos = await window.cacheManager.getOrFetch('productos_cache', async () => {
-                    const querySnapshot = await window.db.collection('products').get();
-                    const prods = [];
-                    querySnapshot.forEach((doc) => {
-                        prods.push({ id: doc.id, ...doc.data() });
-                    });
-                    return prods;
-                });
-            } else {
-                // Fallback si cache-manager no está disponible
-                const querySnapshot = await window.db.collection('products').get();
-                querySnapshot.forEach((doc) => {
-                    productos.push({ id: doc.id, ...doc.data() });
-                });
+                const cached = await window.cacheManager.get('productos_cache');
+                if (cached && cached.length > 0) {
+                    this.productos = cached.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+                    // Renderizado inicial inmediato
+                    this.renderProductos();
+                    this.renderDashboardStats();
+                    console.log('⚡ UI cargada instantáneamente desde caché');
+                }
             }
 
-            // 🔤 ORDENAR ALFABÉTICAMENTE
+            // Carga real desde Firebase
+            const querySnapshot = await window.db.collection('products').get();
+            const productos = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
             this.productos = productos.sort((a, b) => {
                 const nombreA = (a.nombre || '').toLowerCase();
                 const nombreB = (b.nombre || '').toLowerCase();
                 return nombreA.localeCompare(nombreB);
             });
 
-            console.log(`✅ ${this.productos.length} productos cargados y ordenados`);
+            // Actualizar caché para la próxima vez
+            if (window.cacheManager) {
+                await window.cacheManager.set('productos_cache', this.productos);
+            }
+
+            // Refrescar UI con datos frescos de Firebase
+            this.renderProductos();
+            this.renderDashboardStats();
+            
+            console.log(`✅ ${this.productos.length} productos actualizados desde la nube`);
         } catch (error) {
             console.error('❌ Error al cargar productos:', error);
-            this.productos = [];
-            throw error;
+            if (this.productos.length === 0) {
+                this.showNotification('Error de conexión al cargar inventario', 'error');
+            }
         }
     }
 
     renderProductos(productos = this.productos) {
         const tbody = document.getElementById('productos-table-body');
+        const headerCheckboxContainer = document.getElementById('header-checkbox-container');
 
         const tienePermisoEditar = window.authSystem?.hasSubPermission('inventario', 'editarProducto') ?? true;
         const tienePermisoEliminar = window.authSystem?.hasSubPermission('inventario', 'eliminarProducto') ?? true;
+        const tienePermisoEliminarMasivo = window.authSystem?.hasSubPermission('inventario', 'eliminarMasivo') ?? true;
+
+        // Controlar checkbox de "seleccionar todo" basado en permisos
+        if (headerCheckboxContainer) {
+            headerCheckboxContainer.innerHTML = '';
+            
+            if (tienePermisoEliminarMasivo) {
+                const checkInput = document.createElement('input');
+                checkInput.type = 'checkbox';
+                checkInput.id = 'check-all-products';
+                checkInput.title = 'Seleccionar todos';
+                checkInput.style.cursor = 'pointer';
+                checkInput.style.width = '20px';
+                checkInput.style.height = '20px';
+                checkInput.style.verticalAlign = 'middle';
+                checkInput.style.accentColor = 'var(--primary-color)';
+                
+                // Event listener - DOM está listo
+                checkInput.addEventListener('change', (e) => {
+                    const isChecked = e.target.checked;
+                    const checkboxes = document.querySelectorAll('.row-checkbox');
+                    checkboxes.forEach(cb => {
+                        cb.checked = isChecked;
+                    });
+                    this.updateBulkDeleteButton();
+                });
+                
+                headerCheckboxContainer.appendChild(checkInput);
+            }
+        }
 
         if (productos.length === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="14" style="text-align: center; padding: 40px; color: #6D6D80;">
+                    <td colspan="15" style="text-align: center; padding: 40px; color: #6D6D80;">
                         No hay productos registrados
                     </td>
                 </tr>
@@ -2049,7 +2088,12 @@ class InventarioModule {
             }
 
             const mainRow = `
-                <tr>
+                <tr data-id="${producto.id}">
+                    ${tienePermisoEliminarMasivo ? `
+                    <td>
+                        <input type="checkbox" class="row-checkbox" value="${producto.id}" onchange="inventarioModule.updateBulkDeleteButton()">
+                    </td>
+                    ` : ''}
                     <td>
                         ${tieneVariantes || tieneOpciones ? `<button class="btn-toggle" id="toggle-${producto.id}" onclick="inventarioModule.toggleProductDetails('${producto.id}')">▶</button>` : ''}
                     </td>
@@ -3247,18 +3291,29 @@ class InventarioModule {
     loadConversionProductData(producto) {
         const container = document.getElementById('conversiones-container');
         container.innerHTML = '';
+        this.conversionCounter = 0; // Reiniciar contador para la edición
 
         document.getElementById('unidad-base').value = producto.unidadBase || 'unidad';
 
-        if (producto.conversiones && producto.conversiones.length > 0) {
-            producto.conversiones.forEach((conversion, index) => {
+        if (producto.conversiones) {
+            const conversionesArray = Array.isArray(producto.conversiones) 
+                ? producto.conversiones 
+                : Object.values(producto.conversiones || {});
+                
+            conversionesArray.forEach((conversion, index) => {
                 this.agregarConversion();
 
-                document.querySelector(`input[name="conversion_nombre_${index}"]`).value = conversion.tipo || '';
-                document.querySelector(`input[name="conversion_cantidad_${index}"]`).value = conversion.cantidad || 1;
-                document.querySelector(`input[name="conversion_costo_${index}"]`).value = conversion.precio?.costo || 0;
-                document.querySelector(`input[name="conversion_publico_${index}"]`).value = conversion.precio?.publico || 0;
-                document.querySelector(`input[name="conversion_mayorista_${index}"]`).value = conversion.precio?.mayorista || 0;
+                const nombreInput = document.querySelector(`input[name="conversion_nombre_${index}"]`);
+                const cantidadInput = document.querySelector(`input[name="conversion_cantidad_${index}"]`);
+                const costoInput = document.querySelector(`input[name="conversion_costo_${index}"]`);
+                const publicoInput = document.querySelector(`input[name="conversion_publico_${index}"]`);
+                const mayoristaInput = document.querySelector(`input[name="conversion_mayorista_${index}"]`);
+
+                if (nombreInput) nombreInput.value = conversion.tipo || '';
+                if (cantidadInput) cantidadInput.value = conversion.cantidad || 1;
+                if (costoInput) costoInput.value = conversion.precio?.costo || 0;
+                if (publicoInput) publicoInput.value = conversion.precio?.publico || 0;
+                if (mayoristaInput) mayoristaInput.value = conversion.precio?.mayorista || 0;
             });
         }
 
@@ -3596,21 +3651,15 @@ class InventarioModule {
                 return;
             }
 
-            console.log('✅ Guardando producto con proveedor:', {
-                proveedorId,
-                proveedorNombre: proveedorExists.nombre
-            });
-
             const productoData = {
                 tipo: this.currentTipoProducto,
                 nombre: window.inputSanitizer ? window.inputSanitizer.sanitizeText(formData.get('nombre')) : formData.get('nombre'),
                 codigo: formData.get('codigo') || null,
                 categoria: formData.get('categoria'),
-                proveedor: proveedorId, // ID del proveedor
-                proveedorNombre: proveedorExists.nombre // Nombre para referencia rápida
+                proveedor: proveedorId, 
+                proveedorNombre: proveedorExists.nombre
             };
 
-            // Metadata solo para crear nuevo
             if (!isEditing) {
                 productoData.metadata = {
                     createdAt: new Date(),
@@ -3618,9 +3667,9 @@ class InventarioModule {
                     status: 'active'
                 };
             } else {
-                // Actualizar metadata
+                // Al editar, mantenemos los metadatos de creación y agregamos de actualización
                 productoData.metadata = {
-                    ...this.editingProducto.metadata,
+                    ...(this.editingProducto.metadata || {}),
                     updatedAt: new Date(),
                     updatedBy: window.authSystem?.currentUser?.uid || 'unknown'
                 };
@@ -3628,55 +3677,56 @@ class InventarioModule {
 
             if (this.currentTipoProducto === 'simple') {
                 productoData.precio = {
-                    costo: parseFloat(formData.get('precioCosto')),
-                    publico: parseFloat(formData.get('precioPublico')),
-                    mayorista: parseFloat(formData.get('precioMayorista'))
+                    costo: parseFloat(formData.get('precioCosto')) || 0,
+                    publico: parseFloat(formData.get('precioPublico')) || 0,
+                    mayorista: parseFloat(formData.get('precioMayorista')) || 0
                 };
                 productoData.stock = {
-                    actual: parseInt(formData.get('stockInicial')),
-                    minimo: parseInt(formData.get('stockMinimo'))
+                    actual: parseInt(formData.get('stockInicial')) || 0,
+                    minimo: parseInt(formData.get('stockMinimo')) || 0
                 };
             } else if (this.currentTipoProducto === 'variantes') {
                 productoData.variantes = this.extractVariantes(formData);
             } else if (this.currentTipoProducto === 'conversion') {
-                productoData.unidadBase = formData.get('unidadBase');
+                productoData.unidadBase = formData.get('unidadBase') || 'unidad';
                 productoData.conversiones = this.extractConversiones(formData);
+                // 🛠️ Soporte para ambos posibles IDs del modal
+                const stockActual = formData.get('stockInicialConversion') || formData.get('stock-inicial-conversion');
+                const stockMin = formData.get('stockMinimoConversion') || formData.get('stock-minimo-conversion');
+                
                 productoData.stock = {
-                    actual: parseInt(formData.get('stockInicialConversion')),
-                    minimo: parseInt(formData.get('stockMinimoConversion'))
+                    actual: parseInt(stockActual) || 0,
+                    minimo: parseInt(stockMin) || 0
                 };
             }
 
             // Guardar o actualizar
             if (isEditing) {
-                // Actualizar producto existente
-                await window.db.collection('products').doc(this.editingProducto.id).update(productoData);
-
-                // Actualizar localmente
+                await window.db.collection('products').doc(this.editingProducto.id).set(productoData, { merge: true });
+                
                 const index = this.productos.findIndex(p => p.id === this.editingProducto.id);
                 if (index !== -1) {
                     this.productos[index] = { id: this.editingProducto.id, ...productoData };
                 }
-
-                this.closeModal();
                 this.showNotification('Producto actualizado correctamente', 'success');
             } else {
-                // Crear nuevo producto
                 const docRef = await window.db.collection('products').add(productoData);
-
-                // Actualizar localmente
                 this.productos.push({ id: docRef.id, ...productoData });
-
-                this.closeModal();
                 this.showNotification('Producto creado correctamente', 'success');
+            }
+
+            // Invalidar caché
+            if (window.cacheManager && typeof window.cacheManager.invalidate === 'function') {
+                window.cacheManager.invalidate('productos_cache');
             }
 
             this.renderProductos();
             this.renderDashboardStats();
+            this.closeModal();
 
         } catch (error) {
             console.error('Error:', error);
-            this.showNotification('Error al guardar producto', 'error');
+            this.showNotification('Error al guardar producto: ' + error.message, 'error');
         } finally {
             this.hideLoading();
         }
@@ -3885,15 +3935,208 @@ class InventarioModule {
 
         this.showLoading();
         try {
+            // 🚀 Intentar eliminar de Firebase primero
             await window.db.collection('products').doc(id).delete();
-            await this.loadProductos();
+            
+            // ✅ Si llegamos aquí, la eliminación fue exitosa
+            this.productos = this.productos.filter(p => p.id !== id);
+            
+            // 🛠️ CORRECCIÓN: El método correcto es invalidate(), no delete()
+            if (window.cacheManager && typeof window.cacheManager.invalidate === 'function') {
+                window.cacheManager.invalidate('productos_cache');
+            }
+            
             this.renderProductos();
-            this.showNotification('Producto eliminado', 'success');
+            this.renderDashboardStats();
+            this.applyFilters();
+            
+            this.showNotification('Producto eliminado correctamente', 'success');
         } catch (error) {
-            console.error('Error:', error);
-            this.showNotification('Error al eliminar producto', 'error');
+            console.error('❌ Error real al eliminar:', error);
+            
+            if (error.code === 'not-found' || (error.message && error.message.includes('not found'))) {
+                 this.productos = this.productos.filter(p => p.id !== id);
+                 this.renderProductos();
+                 this.showNotification('El producto ya ha sido eliminado', 'success');
+                 return;
+            }
+
+            this.showNotification('Error técnico al eliminar: ' + error.message, 'error');
         } finally {
             this.hideLoading();
+        }
+    }
+
+    async deleteProductosMasivo(ids) {
+        if (!ids || ids.length === 0) return;
+        
+        const tienePermiso = window.authSystem?.hasSubPermission('inventario', 'eliminarMasivo') ?? true;
+        if (!tienePermiso) {
+            this.showNotification('No tienes permiso para realizar eliminación masiva de productos', 'error');
+            return;
+        }
+
+        if (!confirm(`¿Estás seguro de eliminar ${ids.length} productos seleccionados? Esta acción no se puede deshacer.`)) return;
+
+        this.showLoading();
+        try {
+            const db = window.db;
+            const batch = db.batch();
+            
+            ids.forEach(id => {
+                const docRef = db.collection('products').doc(id);
+                batch.delete(docRef);
+            });
+
+            await batch.commit();
+
+            // 🚀 Actualización inmediata del estado local
+            this.productos = this.productos.filter(p => !ids.includes(p.id));
+
+            // 🛠️ CORRECCIÓN: El método correcto es invalidate(), no delete()
+            if (window.cacheManager && typeof window.cacheManager.invalidate === 'function') {
+                window.cacheManager.invalidate('productos_cache');
+            }
+
+            this.renderProductos();
+            this.renderDashboardStats();
+            this.applyFilters();
+            
+            this.showNotification(`${ids.length} productos eliminados correctamente`, 'success');
+            
+            const checkAll = document.getElementById('check-all-products');
+            if (checkAll) checkAll.checked = false;
+            
+            this.updateBulkDeleteButton();
+            
+        } catch (error) {
+            console.error('Error en eliminación masiva:', error);
+            this.showNotification('Error al eliminar algunos productos: ' + error.message, 'error');
+        } finally {
+            this.hideLoading();
+        }
+    }
+
+    toggleSelectAll(checkbox) {
+        const allCheckboxes = document.querySelectorAll('.row-checkbox');
+        allCheckboxes.forEach(cb => {
+            cb.checked = checkbox.checked;
+        });
+        this.updateBulkDeleteButton();
+    }
+
+    updateBulkDeleteButton() {
+        const checked = document.querySelectorAll('.row-checkbox:checked');
+        const checkAll = document.getElementById('check-all-products');
+        const allCheckboxes = document.querySelectorAll('.row-checkbox');
+        
+        // Actualizar estado del checkbox "seleccionar todo"
+        if (checkAll) {
+            checkAll.checked = checked.length === allCheckboxes.length && allCheckboxes.length > 0;
+            checkAll.indeterminate = checked.length > 0 && checked.length < allCheckboxes.length;
+        }
+        
+        let btnBulk = document.getElementById('btn-bulk-delete');
+        
+        if (checked.length > 0) {
+            if (!btnBulk) {
+                btnBulk = document.createElement('button');
+                btnBulk.id = 'btn-bulk-delete';
+                btnBulk.className = 'btn-bulk-delete-ios';
+                btnBulk.innerHTML = `
+                    <div class="bulk-delete-content">
+                        <div class="bulk-delete-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                        </div>
+                        <div class="bulk-delete-text">
+                            <span class="bulk-delete-label">Eliminar Selección</span>
+                            <span class="bulk-delete-count"><span id="bulk-count">0</span> productos</span>
+                        </div>
+                    </div>
+                `;
+                btnBulk.addEventListener('click', () => {
+                    const ids = Array.from(document.querySelectorAll('.row-checkbox:checked')).map(cb => cb.value);
+                    this.deleteProductosMasivo(ids);
+                });
+                document.body.appendChild(btnBulk);
+
+                // Estilos inline para asegurar coherencia iOS
+                const style = document.createElement('style');
+                style.id = 'bulk-delete-styles';
+                style.textContent = `
+                    .btn-bulk-delete-ios {
+                        position: fixed;
+                        bottom: 180px;
+                        right: 24px;
+                        z-index: 9999;
+                        background: #FF3B30;
+                        color: white;
+                        border: none;
+                        padding: 12px 20px;
+                        border-radius: 16px;
+                        box-shadow: 0 8px 24px rgba(255, 59, 48, 0.4);
+                        cursor: pointer;
+                        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+                        animation: bulkPopIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+                        display: flex;
+                        align-items: center;
+                    }
+                    .btn-bulk-delete-ios:hover {
+                        transform: translateY(-4px) scale(1.02);
+                        box-shadow: 0 12px 30px rgba(255, 59, 48, 0.5);
+                        background: #FF453A;
+                    }
+                    .btn-bulk-delete-ios:active {
+                        transform: scale(0.96);
+                    }
+                    .bulk-delete-content {
+                        display: flex;
+                        align-items: center;
+                        gap: 12px;
+                    }
+                    .bulk-delete-icon {
+                        width: 36px;
+                        height: 36px;
+                        background: rgba(255,255,255,0.2);
+                        border-radius: 10px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }
+                    .bulk-delete-icon svg { width: 20px; height: 20px; }
+                    .bulk-delete-text {
+                        display: flex;
+                        direction: ltr;
+                        flex-direction: column;
+                        align-items: flex-start;
+                        line-height: 1.2;
+                    }
+                    .bulk-delete-label {
+                        font-size: 14px;
+                        font-weight: 700;
+                        letter-spacing: -0.2px;
+                    }
+                    .bulk-delete-count {
+                        font-size: 11px;
+                        opacity: 0.9;
+                        font-weight: 500;
+                    }
+                    @keyframes bulkPopIn {
+                        from { opacity: 0; transform: translateY(40px) scale(0.8); }
+                        to { opacity: 1; transform: translateY(0) scale(1); }
+                    }
+                `;
+                if (!document.getElementById('bulk-delete-styles')) {
+                    document.head.appendChild(style);
+                }
+            }
+            document.getElementById('bulk-count').textContent = checked.length;
+        } else if (btnBulk) {
+            btnBulk.classList.add('pop-out');
+            setTimeout(() => btnBulk.remove(), 300);
         }
     }
 
