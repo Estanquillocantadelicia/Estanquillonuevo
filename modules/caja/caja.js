@@ -398,9 +398,9 @@ class CajaModule {
                 const timestampCierre = firebase.firestore.Timestamp.fromDate(fechaCierre);
 
                 this.ventas = todasLasVentas.filter(venta => {
-                    const esCompletada = venta.estado === 'completada';
+                    const esCompletada = venta.estado === 'completada' || venta.estado === 'pendiente';
                     const dentroRango = venta.fecha >= timestampApertura && venta.fecha <= timestampCierre;
-                    return esCompletada && dentroRango;
+                    return dentroRango;
                 });
 
                 console.log(`✅ Ventas COMPLETADAS del turno: ${this.ventas.length}`);
@@ -1194,9 +1194,9 @@ El sistema continúa funcionando normalmente usando cache local.
             this.ventas = querySnapshot.docs
                 .map(doc => ({ id: doc.id, ...doc.data() }))
                 .filter(venta => {
-                    const esCompletada = venta.estado === 'completada';
+                    const esValida = venta.estado === 'completada' || venta.estado === 'pendiente';
                     const dentroRango = venta.fecha >= timestampApertura && venta.fecha <= timestampAhora;
-                    return esCompletada && dentroRango;
+                    return esValida && dentroRango;
                 });
 
             console.log(`✅ ${this.ventas.length} ventas completadas del turno (de ${querySnapshot.size} ventas totales del vendedor)`);
@@ -1444,13 +1444,27 @@ El sistema continúa funcionando normalmente usando cache local.
                         <span class="info-value" style="color: #34C759; font-weight: 700;">${formatter ? formatter.format(efectivoFisico) : '$' + efectivoFisico.toFixed(2)}</span>
                         <small style="opacity: 0.7; font-size: 0.85rem;">Efectivo físico + ingresos - egresos</small>
                     </div>
-                    <div class="info-item">
-                        <span class="info-label">📊 Control del Turno</span>
-                        <span class="info-value">${formatter ? formatter.format(dineroTotal) : '$' + dineroTotal.toFixed(2)}</span>
-                        <small style="opacity: 0.7; font-size: 0.85rem;">Efectivo + Tarjeta + Transferencia + Crédito</small>
+                    
+                    <div class="metodos-pago-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid rgba(0,0,0,0.1);">
+                        <div class="info-item compact">
+                            <span class="info-label">💳 Tarjeta</span>
+                            <span class="info-value">${formatter ? formatter.format(tarjetaVentas) : '$' + tarjetaVentas.toFixed(2)}</span>
+                        </div>
+                        <div class="info-item compact">
+                            <span class="info-label">📱 Transf.</span>
+                            <span class="info-value">${formatter ? formatter.format(transferenciaVentas) : '$' + transferenciaVentas.toFixed(2)}</span>
+                        </div>
+                        <div class="info-item compact">
+                            <span class="info-label">📝 Crédito</span>
+                            <span class="info-value" style="color: #FF9500;">${formatter ? formatter.format(creditoVentas) : '$' + creditoVentas.toFixed(2)}</span>
+                        </div>
+                        <div class="info-item compact">
+                            <span class="info-label">📊 Total Turno</span>
+                            <span class="info-value" style="font-weight: 700;">${formatter ? formatter.format(dineroTotal) : '$' + dineroTotal.toFixed(2)}</span>
+                        </div>
                     </div>
                 </div>
-                <div class="estado-actions">
+                <div class="estado-actions" style="margin-top: 20px;">
                     <button class="btn btn-danger" id="btn-cerrar-caja">
                         <span class="icon">🔒</span> Cerrar Caja
                     </button>
@@ -1458,11 +1472,16 @@ El sistema continúa funcionando normalmente usando cache local.
             </div>
         `;
 
-        // Actualizar stats con desglose por método de pago
-        document.getElementById('total-efectivo').textContent = formatter ? formatter.format(efectivoFisico) : '$' + efectivoFisico.toFixed(2);
-        document.getElementById('total-ventas').textContent = formatter ? formatter.format(totalVentas) : '$' + totalVentas.toFixed(2);
-        document.getElementById('total-ingresos').textContent = formatter ? formatter.format(ingresos) : '$' + ingresos.toFixed(2);
-        document.getElementById('total-egresos').textContent = formatter ? formatter.format(egresos) : '$' + egresos.toFixed(2);
+        // Actualizar stats
+        const totalEfectivoEl = document.getElementById('total-efectivo');
+        const totalVentasEl = document.getElementById('total-ventas');
+        const totalIngresosEl = document.getElementById('total-ingresos');
+        const totalEgresosEl = document.getElementById('total-egresos');
+
+        if (totalEfectivoEl) totalEfectivoEl.textContent = formatter ? formatter.format(efectivoFisico) : '$' + efectivoFisico.toFixed(2);
+        if (totalVentasEl) totalVentasEl.textContent = formatter ? formatter.format(totalVentas) : '$' + totalVentas.toFixed(2);
+        if (totalIngresosEl) totalIngresosEl.textContent = formatter ? formatter.format(ingresos) : '$' + ingresos.toFixed(2);
+        if (totalEgresosEl) totalEgresosEl.textContent = formatter ? formatter.format(egresos) : '$' + egresos.toFixed(2);
 
         // Actualizar desglose adicional en consola para verificación
         console.log('💳 DESGLOSE POR MÉTODO DE PAGO:', {
@@ -1519,6 +1538,7 @@ El sistema continúa funcionando normalmente usando cache local.
 
         tbody.innerHTML = this.ventas.map(venta => {
             const fecha = venta.fecha.toDate();
+            const formatter = window.currencyFormatter;
             return `
                 <tr>
                     <td>
@@ -1548,15 +1568,23 @@ El sistema continúa funcionando normalmente usando cache local.
                             <span>${venta.cliente?.nombre || 'Público general'}</span>
                         </div>
                     </td>
-                    <td><span class="badge badge-${venta.metodoPago === 'efectivo' ? 'success' : 'warning'}">${venta.metodoPago}</span></td>
                     <td>
-                        <div>
-                            <svg class="row-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <line x1="12" y1="1" x2="12" y2="23"></line>
-                                <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path>
-                            </svg>
-                            <span>${formatter ? formatter.format(venta.total) : '$' + venta.total.toFixed(2)}</span>
+                        <span class="badge badge-${(venta.metodoPago || venta.tipoPago || 'efectivo').toString().toLowerCase() === 'credito' ? 'warning' : 'info'}">
+                            ${(venta.metodoPago || venta.tipoPago || 'Efectivo').toString().toUpperCase()}
+                        </span>
+                    </td>
+                    <td>
+                        <div style="font-weight: 600; color: #1C1C1E;">
+                            ${formatter ? formatter.format(venta.total) : '$' + (venta.total || 0).toFixed(2)}
                         </div>
+                    </td>
+                    <td>
+                        <button class="btn-icon" onclick="window.ventasModule.verDetalleVenta('${venta.id}')" title="Ver detalle">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width: 18px; height: 18px;">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        </button>
                     </td>
                 </tr>
             `;
@@ -1959,8 +1987,14 @@ El sistema continúa funcionando normalmente usando cache local.
                 efectivoReal,
                 diferencia,
                 notasCierre: notas,
-                totalVentas: this.ventas.reduce((sum, v) => sum + v.total, 0),
-                cantidadVentas: this.ventas.length
+                totalVentas: this.ventas.reduce((sum, v) => sum + (v.total || 0), 0),
+                cantidadVentas: this.ventas.length,
+                desglosePagos: {
+                    efectivo: this.ventas.filter(v => (v.metodoPago || v.tipoPago || 'efectivo').toString().toLowerCase().trim() === 'efectivo').reduce((s, v) => s + (v.total || 0), 0),
+                    tarjeta: this.ventas.filter(v => (v.metodoPago || v.tipoPago || '').toString().toLowerCase().trim() === 'tarjeta').reduce((s, v) => s + (v.total || 0), 0),
+                    transferencia: this.ventas.filter(v => (v.metodoPago || v.tipoPago || '').toString().toLowerCase().trim() === 'transferencia').reduce((s, v) => s + (v.total || 0), 0),
+                    credito: this.ventas.filter(v => (v.metodoPago || v.tipoPago || '').toString().toLowerCase().trim() === 'credito').reduce((s, v) => s + (v.total || 0), 0)
+                }
             });
 
             console.log('✅ Caja cerrada en Firestore');
@@ -2508,9 +2542,9 @@ El sistema continúa funcionando normalmente usando cache local.
                 ventas = ventasSnapshot.docs
                     .map(doc => ({ id: doc.id, ...doc.data() }))
                     .filter(v => {
-                        const esCompletada = v.estado === 'completada';
+                        const esValida = v.estado === 'completada' || v.estado === 'pendiente';
                         const dentroRango = v.fecha >= caja.fechaApertura && v.fecha <= fechaCierre;
-                        return esCompletada && dentroRango;
+                        return esValida && dentroRango;
                     });
 
                 console.log(`✅ ${ventas.length} ventas completadas cargadas para caja ${cajaId} (de ${ventasSnapshot.size} totales del vendedor)`);
