@@ -29,6 +29,9 @@ class VentasModule {
 
         // ✅ CONFIGURAR EVENT LISTENERS DE MODALES
         this.setupModalEventListeners();
+        
+        // Reiniciar atajos cada vez que se carga el módulo para asegurar que el listener esté activo
+        this.setupKeyboardShortcuts();
 
         // ✅ RENDERIZAR UI INMEDIATAMENTE (sin esperar datos)
         this.cargarCarritosGuardados(); // Cargar carritos desde localStorage
@@ -1330,7 +1333,157 @@ class VentasModule {
         console.log('✅ Event listeners de modales configurados');
     }
 
+    setupKeyboardShortcuts() {
+        // Remover listener anterior si existe para evitar duplicados
+        if (this._keyboardHandler) {
+            window.removeEventListener('keydown', this._keyboardHandler, true);
+        }
+
+        this._keyboardHandler = async (e) => {
+            const activeElement = document.activeElement;
+            const isInput = activeElement.tagName === 'INPUT' || 
+                           activeElement.tagName === 'TEXTAREA' || 
+                           activeElement.isContentEditable;
+            
+            // Si estamos en el buscador de productos (pos-search), no interceptar flechas ni enter
+            if (activeElement.id === 'pos-search') return;
+
+            // ESC: Cerrar modales (prioridad alta)
+            if (e.key === 'Escape') {
+                if (isInput) {
+                    activeElement.blur();
+                    return;
+                }
+                const modalActivo = document.querySelector('.modal.active, .modal-inventario.active');
+                if (modalActivo) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const btnClose = modalActivo.querySelector('.close-modal, .btn-close, .modal-inventario-close, .btn-secondary');
+                    if (btnClose) btnClose.click();
+                    else modalActivo.classList.remove('active');
+                }
+                return;
+            }
+
+            // ENTER: Procesar o Confirmar
+            if (e.key === 'Enter') {
+                if (isInput && activeElement.id !== 'monto-pagado') return;
+
+                const modalCobro = document.getElementById('modal-cobro');
+                const modalConfirm = document.getElementById('modal-confirm-venta');
+                const modalEfectivo = document.getElementById('modal-efectivo');
+                const modalCredito = document.getElementById('modal-credito');
+                
+                let targetBtn = null;
+                if (modalConfirm?.classList.contains('active')) {
+                    targetBtn = document.getElementById('btn-confirm-venta-action');
+                } else if (modalEfectivo?.classList.contains('active')) {
+                    targetBtn = document.getElementById('btn-confirmar-pago-efectivo');
+                } else if (modalCredito?.classList.contains('active')) {
+                    targetBtn = document.getElementById('btn-confirmar-credito');
+                } else if (modalCobro?.classList.contains('active')) {
+                    const metodoActivo = this.getMetodoPagoActivo();
+                    if (metodoActivo === 'efectivo') targetBtn = document.getElementById('btn-pagar-efectivo');
+                    else if (metodoActivo === 'credito') targetBtn = document.getElementById('btn-pagar-credito');
+                    else {
+                        e.preventDefault();
+                        this.mostrarConfirmacionVenta(metodoActivo);
+                        return;
+                    }
+                } else if (this.carrito.length > 0 && !isInput) {
+                    targetBtn = document.getElementById('btn-cobrar');
+                }
+
+                if (targetBtn) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    targetBtn.click();
+                }
+                return;
+            }
+
+            // FLECHAS: Solo fuera de inputs y sin modales activos
+            if (!isInput && !document.querySelector('.modal.active')) {
+                if (e.key === 'ArrowUp') {
+                    if (this.carrito.length > 0) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const ultimoItem = this.carrito[this.carrito.length - 1];
+                        console.log('⌨️ KEYBOARD: Sumando cantidad a', ultimoItem.nombre);
+                        this.actualizarCantidad(ultimoItem.id, (ultimoItem.cantidad || 0) + 1);
+                    }
+                } else if (e.key === 'ArrowDown') {
+                    if (this.carrito.length > 0) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const ultimoItem = this.carrito[this.carrito.length - 1];
+                        console.log('⌨️ KEYBOARD: Restando cantidad a', ultimoItem.nombre);
+                        if (ultimoItem.cantidad > 1) {
+                            this.actualizarCantidad(ultimoItem.id, ultimoItem.cantidad - 1);
+                        } else {
+                            this.eliminarDelCarrito(ultimoItem.id);
+                        }
+                    }
+                }
+            }
+        };
+
+        // Usar capture phase y window para máxima prioridad
+        window.addEventListener('keydown', this._keyboardHandler, true);
+        console.log('⌨️ Atajos de teclado vinculados globalmente');
+    }
+
+    getMetodoPagoActivo() {
+        const metodos = document.querySelectorAll('.metodo-pago-item');
+        let activo = 'efectivo';
+        metodos.forEach(m => {
+            if (m.classList.contains('active')) {
+                activo = m.dataset.metodo;
+            }
+        });
+        return activo;
+    }
+
+    mostrarConfirmacionVenta(metodo) {
+        let modalConfirm = document.getElementById('modal-confirm-venta');
+        if (!modalConfirm) {
+            modalConfirm = document.createElement('div');
+            modalConfirm.id = 'modal-confirm-venta';
+            modalConfirm.className = 'modal';
+            modalConfirm.innerHTML = `
+                <div class="modal-content" style="max-width: 400px; text-align: center; border-radius: 20px; padding: 30px;">
+                    <div style="font-size: 50px; margin-bottom: 15px;">🚀</div>
+                    <h3 style="margin-bottom: 10px;">¿Confirmar venta?</h3>
+                    <p id="confirm-venta-text" style="color: #6D6D80; margin-bottom: 25px;"></p>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                        <button class="btn btn-secondary" onclick="this.closest('.modal').classList.remove('active')">
+                            Esc - Cancelar
+                        </button>
+                        <button id="btn-confirm-venta-action" class="btn btn-primary">
+                            Enter - Confirmar
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modalConfirm);
+        }
+        
+        const text = document.getElementById('confirm-venta-text');
+        const labels = { 'tarjeta': '💳 Tarjeta', 'transferencia': '🏦 Transferencia', 'credito': '📝 Crédito' };
+        text.textContent = `Se procesará la venta por ${labels[metodo] || metodo}`;
+        
+        const btnConfirm = document.getElementById('btn-confirm-venta-action');
+        btnConfirm.onclick = () => {
+            modalConfirm.classList.remove('active');
+            this.finalizarVenta(metodo);
+        };
+        
+        modalConfirm.classList.add('active');
+    }
+
     setupEventListeners() {
+        // Atajos de teclado profesionales
+        this.setupKeyboardShortcuts();
         // Los tabs ahora se manejan en setupTabsSystem()
 
         // Filtro de período

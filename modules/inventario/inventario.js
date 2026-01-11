@@ -3586,27 +3586,28 @@ class InventarioModule {
     agregarConversion() {
         const container = document.getElementById('conversiones-container');
         const index = this.conversionCounter++;
+        const isBase = index === 0;
 
         const conversionHTML = `
             <div class="variante-item" data-conversion="${index}">
                 <div class="variante-header">
-                    <strong>Unidad de Venta ${index + 1}</strong>
-                    <button type="button" class="btn-remove-variante" onclick="inventarioModule.removeConversion(${index})">Eliminar</button>
+                    <strong>${isBase ? '📦 Unidad Base (Principal)' : `Unidad de Venta Adicional ${index}`}</strong>
+                    ${!isBase ? `<button type="button" class="btn-remove-variante" onclick="inventarioModule.removeConversion(${index})">Eliminar</button>` : ''}
                 </div>
                 <div class="form-row">
                     <div class="form-group">
                         <label>Nombre *</label>
-                        <input type="text" name="conversion_nombre_${index}" placeholder="Ej: Paquete" required>
+                        <input type="text" name="conversion_nombre_${index}" placeholder="Ej: ${isBase ? 'Unidad' : 'Paquete'}" value="${isBase ? 'Unidad' : ''}" required>
                     </div>
                     <div class="form-group">
                         <label>Cantidad en unidad base *</label>
-                        <input type="number" name="conversion_cantidad_${index}" min="1" placeholder="Ej: 20" required>
+                        <input type="number" name="conversion_cantidad_${index}" min="1" placeholder="Ej: 1" value="${isBase ? '1' : ''}" ${isBase ? 'readonly' : ''} required>
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group">
+                    <div class="form-group" style="${isBase ? '' : 'display:none;'}">
                         <label>Precio Costo *</label>
-                        <input type="number" name="conversion_costo_${index}" step="0.01" min="0" required>
+                        <input type="number" name="conversion_costo_${index}" step="0.01" min="0" ${isBase ? 'required' : ''} value="${isBase ? '' : '0'}">
                     </div>
                     <div class="form-group">
                         <label>Precio Público *</label>
@@ -3617,6 +3618,7 @@ class InventarioModule {
                     <label>Precio Mayorista *</label>
                     <input type="number" name="conversion_mayorista_${index}" step="0.01" min="0" required>
                 </div>
+                ${isBase ? '<small style="color: var(--primary-color); font-weight: 500;">Esta es la unidad mínima. El precio de costo se define aquí.</small>' : ''}
             </div>
         `;
 
@@ -3660,21 +3662,7 @@ class InventarioModule {
                 proveedorNombre: proveedorExists.nombre
             };
 
-            if (!isEditing) {
-                productoData.metadata = {
-                    createdAt: new Date(),
-                    createdBy: window.authSystem?.currentUser?.uid || 'unknown',
-                    status: 'active'
-                };
-            } else {
-                // Al editar, mantenemos los metadatos de creación y agregamos de actualización
-                productoData.metadata = {
-                    ...(this.editingProducto.metadata || {}),
-                    updatedAt: new Date(),
-                    updatedBy: window.authSystem?.currentUser?.uid || 'unknown'
-                };
-            }
-
+            // Limpiar datos previos según el tipo para evitar duplicidad o mezcla de lógica
             if (this.currentTipoProducto === 'simple') {
                 productoData.precio = {
                     costo: parseFloat(formData.get('precioCosto')) || 0,
@@ -3685,24 +3673,63 @@ class InventarioModule {
                     actual: parseInt(formData.get('stockInicial')) || 0,
                     minimo: parseInt(formData.get('stockMinimo')) || 0
                 };
+                // Asegurar que no existan campos de otros tipos
+                productoData.variantes = null;
+                productoData.conversiones = null;
+                productoData.unidadBase = null;
+
             } else if (this.currentTipoProducto === 'variantes') {
                 productoData.variantes = this.extractVariantes(formData);
+                // Asegurar que no existan campos de otros tipos
+                productoData.precio = null;
+                productoData.conversiones = null;
+                productoData.unidadBase = null;
+
             } else if (this.currentTipoProducto === 'conversion') {
                 productoData.unidadBase = formData.get('unidadBase') || 'unidad';
                 productoData.conversiones = this.extractConversiones(formData);
+                
                 // 🛠️ Soporte para ambos posibles IDs del modal
-                const stockActual = formData.get('stockInicialConversion') || formData.get('stock-inicial-conversion');
-                const stockMin = formData.get('stockMinimoConversion') || formData.get('stock-minimo-conversion');
+                const stockActualInput = formData.get('stockInicialConversion') || formData.get('stock-inicial-conversion');
+                const stockMinInput = formData.get('stockMinimoConversion') || formData.get('stock-minimo-conversion');
                 
                 productoData.stock = {
-                    actual: parseInt(stockActual) || 0,
-                    minimo: parseInt(stockMin) || 0
+                    actual: parseInt(stockActualInput) || 0,
+                    minimo: parseInt(stockMinInput) || 0
+                };
+
+                // En productos de conversión, el precio principal se deriva de las unidades
+                // pero limpiamos el objeto precio raíz para evitar conflictos
+                productoData.precio = null;
+                productoData.variantes = null;
+            }
+
+            if (!isEditing) {
+                productoData.metadata = {
+                    createdAt: new Date(),
+                    createdBy: window.authSystem?.currentUser?.uid || 'unknown',
+                    status: 'active'
+                };
+            } else {
+                productoData.metadata = {
+                    ...(this.editingProducto.metadata || {}),
+                    updatedAt: new Date(),
+                    updatedBy: window.authSystem?.currentUser?.uid || 'unknown'
                 };
             }
 
-            // Guardar o actualizar
+            // Guardar o actualizar con limpieza estricta (usando set sin merge para el objeto raíz si es necesario, 
+            // pero aquí mantenemos set con merge: true para no borrar metadatos externos si existieran, 
+            // aunque productoData ya va limpio)
             if (isEditing) {
-                await window.db.collection('products').doc(this.editingProducto.id).set(productoData, { merge: true });
+                const docRef = window.db.collection('products').doc(this.editingProducto.id);
+                
+                // Si cambiamos el tipo de producto, es mejor sobrescribir el documento para eliminar campos obsoletos
+                if (this.editingProducto.tipo !== this.currentTipoProducto) {
+                    await docRef.set(productoData);
+                } else {
+                    await docRef.set(productoData, { merge: true });
+                }
                 
                 const index = this.productos.findIndex(p => p.id === this.editingProducto.id);
                 if (index !== -1) {
@@ -3792,13 +3819,16 @@ class InventarioModule {
         for (let i = 0; i < this.conversionCounter; i++) {
             const nombre = formData.get(`conversion_nombre_${i}`);
             if (nombre) {
+                const cantidad = parseInt(formData.get(`conversion_cantidad_${i}`)) || 1;
+                const costo = parseFloat(formData.get(`conversion_costo_${i}`)) || 0;
+                
                 conversiones.push({
                     tipo: window.inputSanitizer ? window.inputSanitizer.sanitizeText(nombre) : nombre,
-                    cantidad: parseInt(formData.get(`conversion_cantidad_${i}`)),
+                    cantidad: cantidad,
                     precio: {
-                        costo: parseFloat(formData.get(`conversion_costo_${i}`)),
-                        publico: parseFloat(formData.get(`conversion_publico_${i}`)),
-                        mayorista: parseFloat(formData.get(`conversion_mayorista_${i}`))
+                        costo: costo,
+                        publico: parseFloat(formData.get(`conversion_publico_${i}`)) || 0,
+                        mayorista: parseFloat(formData.get(`conversion_mayorista_${i}`)) || 0
                     }
                 });
             }
