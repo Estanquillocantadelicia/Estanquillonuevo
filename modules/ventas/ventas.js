@@ -3207,112 +3207,114 @@ Visita: https://console.firebase.google.com/project/app-estanquillo/firestore/in
             return;
         }
 
-        const batch = window.db.batch();
-        const actualizaciones = [];
+        try {
+            console.log('📦 Iniciando consolidación de inventario para actualización atómica...');
+            
+            // 1. Agrupar items por productoId para evitar sobreescrituras (Race Conditions)
+            const itemsPorProducto = items.reduce((acc, item) => {
+                const id = item.producto?.id;
+                if (!id) return acc;
+                if (!acc[id]) acc[id] = [];
+                acc[id].push(item);
+                return acc;
+            }, {});
 
-        for (const item of items) {
-            try {
-                if (!item.producto?.id) {
-                    console.error('❌ Item sin producto válido:', item);
-                    continue;
-                }
+            const batch = window.db.batch();
+            const actualizacionesLog = [];
 
-                const productoRef = window.db.collection('products').doc(item.producto.id);
+            // 2. Procesar cada producto de forma atómica
+            for (const productoId in itemsPorProducto) {
+                const productoRef = window.db.collection('products').doc(productoId);
                 const productoDoc = await productoRef.get();
 
                 if (!productoDoc.exists) {
-                    console.error('❌ Producto no encontrado:', item.producto.id);
+                    console.error(`❌ Producto no encontrado: ${productoId}`);
                     continue;
                 }
 
                 const productoData = productoDoc.data();
+                const itemsDelProducto = itemsPorProducto[productoId];
+                
+                // Clonar datos para modificarlos con seguridad
+                let dataActualizada = JSON.parse(JSON.stringify(productoData));
+                let huboCambios = false;
 
-                if (item.tipo === 'simple') {
-                    // Producto simple - descontar stock directo
-                    const stockActual = productoData.stock?.actual || 0;
-                    const nuevoStock = stockActual - item.cantidad;
-
-                    if (nuevoStock < 0) {
-                        console.warn(`⚠️ Stock negativo para ${item.nombre}: ${nuevoStock}`);
+                for (const item of itemsDelProducto) {
+                    // Normalizar tipo (corregir 'variante' a 'variante-simple' o detectar por estructura)
+                    let tipoEfectivo = item.tipo;
+                    if (tipoEfectivo === 'variante') {
+                        tipoEfectivo = item.opcionIndex !== undefined ? 'variante-opcion' : 'variante-simple';
                     }
 
-                    batch.update(productoRef, {
-                        'stock.actual': nuevoStock
-                    });
-
-                    actualizaciones.push(`${item.nombre}: ${stockActual} → ${nuevoStock}`);
-
-                } else if (item.tipo === 'variante-simple') {
-                    // Variante sin opciones
-                    const variantesArray = Array.isArray(productoData.variantes) 
-                        ? [...productoData.variantes] 
-                        : Object.values(productoData.variantes || {});
-
-                    if (variantesArray[item.varianteIndex]) {
-                        const stockActual = variantesArray[item.varianteIndex].stock?.actual || 0;
+                    if (tipoEfectivo === 'simple') {
+                        const stockActual = dataActualizada.stock?.actual || 0;
                         const nuevoStock = stockActual - item.cantidad;
-                        variantesArray[item.varianteIndex].stock = {
-                            ...variantesArray[item.varianteIndex].stock,
-                            actual: nuevoStock
-                        };
+                        if (!dataActualizada.stock) dataActualizada.stock = {};
+                        dataActualizada.stock.actual = nuevoStock;
+                        huboCambios = true;
+                        actualizacionesLog.push(`${item.nombre} (Simple): ${stockActual} → ${nuevoStock}`);
 
-                        batch.update(productoRef, {
-                            variantes: variantesArray
-                        });
+                    } else if (tipoEfectivo === 'variante-simple' || tipoEfectivo === 'variante') {
+                        const variantesArray = Array.isArray(dataActualizada.variantes) 
+                            ? dataActualizada.variantes 
+                            : Object.values(dataActualizada.variantes || {});
 
-                        actualizaciones.push(`${item.nombre}: ${stockActual} → ${nuevoStock}`);
-                    }
-
-                } else if (item.tipo === 'variante-opcion') {
-                    // Variante con opción específica
-                    const variantesArray = Array.isArray(productoData.variantes) 
-                        ? [...productoData.variantes] 
-                        : Object.values(productoData.variantes || {});
-
-                    if (variantesArray[item.varianteIndex]) {
-                        const opcionesArray = Array.isArray(variantesArray[item.varianteIndex].opciones) 
-                            ? [...variantesArray[item.varianteIndex].opciones] 
-                            : Object.values(variantesArray[item.varianteIndex].opciones || {});
-
-                        if (opcionesArray[item.opcionIndex]) {
-                            const stockActual = opcionesArray[item.opcionIndex].stock?.actual || 0;
+                        if (variantesArray[item.varianteIndex]) {
+                            const stockActual = variantesArray[item.varianteIndex].stock?.actual || 0;
                             const nuevoStock = stockActual - item.cantidad;
-                            opcionesArray[item.opcionIndex].stock = {
-                                ...opcionesArray[item.opcionIndex].stock,
-                                actual: nuevoStock
-                            };
-                            variantesArray[item.varianteIndex].opciones = opcionesArray;
-
-                            batch.update(productoRef, {
-                                variantes: variantesArray
-                            });
-
-                            actualizaciones.push(`${item.nombre}: ${stockActual} → ${nuevoStock}`);
+                            if (!variantesArray[item.varianteIndex].stock) variantesArray[item.varianteIndex].stock = {};
+                            variantesArray[item.varianteIndex].stock.actual = nuevoStock;
+                            dataActualizada.variantes = variantesArray;
+                            huboCambios = true;
+                            actualizacionesLog.push(`${item.nombre} (Variante): ${stockActual} → ${nuevoStock}`);
                         }
+
+                    } else if (tipoEfectivo === 'variante-opcion') {
+                        const variantesArray = Array.isArray(dataActualizada.variantes) 
+                            ? dataActualizada.variantes 
+                            : Object.values(dataActualizada.variantes || {});
+
+                        if (variantesArray[item.varianteIndex]) {
+                            const opcionesArray = Array.isArray(variantesArray[item.varianteIndex].opciones) 
+                                ? variantesArray[item.varianteIndex].opciones 
+                                : Object.values(variantesArray[item.varianteIndex].opciones || {});
+
+                            if (opcionesArray[item.opcionIndex]) {
+                                const stockActual = opcionesArray[item.opcionIndex].stock?.actual || 0;
+                                const nuevoStock = stockActual - item.cantidad;
+                                if (!opcionesArray[item.opcionIndex].stock) opcionesArray[item.opcionIndex].stock = {};
+                                opcionesArray[item.opcionIndex].stock.actual = nuevoStock;
+                                variantesArray[item.varianteIndex].opciones = opcionesArray;
+                                dataActualizada.variantes = variantesArray;
+                                huboCambios = true;
+                                actualizacionesLog.push(`${item.nombre} (Opción): ${stockActual} → ${nuevoStock}`);
+                            }
+                        }
+
+                    } else if (tipoEfectivo === 'conversion') {
+                        const cantidadBase = (item.conversion?.cantidad || 0) * (item.cantidad || 0);
+                        const stockActual = dataActualizada.stock?.actual || 0;
+                        const nuevoStock = stockActual - cantidadBase;
+                        if (!dataActualizada.stock) dataActualizada.stock = {};
+                        dataActualizada.stock.actual = nuevoStock;
+                        huboCambios = true;
+                        actualizacionesLog.push(`${item.nombre} (Conversión): ${stockActual} → ${nuevoStock} (-${cantidadBase} base)`);
                     }
-
-                } else if (item.tipo === 'conversion') {
-                    // Producto con conversión - descontar de stock base
-                    const cantidadBase = item.conversion.cantidad * item.cantidad;
-                    const stockActual = productoData.stock?.actual || 0;
-                    const nuevoStock = stockActual - cantidadBase;
-
-                    batch.update(productoRef, {
-                        'stock.actual': nuevoStock
-                    });
-
-                    actualizaciones.push(`${item.nombre}: ${stockActual} → ${nuevoStock} (${cantidadBase} unidades base)`);
                 }
-            } catch (error) {
-                console.error(`❌ Error procesando item ${item.nombre}:`, error);
-                throw new Error(`Error actualizando ${item.nombre}: ${error.message}`);
-            }
-        }
 
-        // Ejecutar todas las actualizaciones en batch
-        console.log('📦 Actualizaciones de inventario:', actualizaciones);
-        await batch.commit();
-        console.log('✅ Inventario actualizado correctamente');
+                if (huboCambios) {
+                    batch.update(productoRef, dataActualizada);
+                }
+            }
+
+            console.log('📦 Aplicando batch de inventario:', actualizacionesLog);
+            await batch.commit();
+            console.log('✅ Inventario actualizado correctamente con método de consolidación atómica');
+
+        } catch (error) {
+            console.error('❌ Error crítico actualizando inventario:', error);
+            throw error;
+        }
     }
 
     async actualizarEstadisticas() {
@@ -3644,100 +3646,150 @@ Visita: https://console.firebase.google.com/project/app-estanquillo/firestore/in
             return;
         }
 
-        // Buscar venta de forma más robusta - convertir a string para comparación
         const venta = this.ventas.find(v => String(v.id) === String(this.ventaSeleccionada));
         if (!venta) {
-            console.error('❌ Venta no encontrada. ID buscado:', this.ventaSeleccionada, 'IDs disponibles:', this.ventas.map(v => v.id));
+            console.error('❌ Venta no encontrada:', this.ventaSeleccionada);
             alert('Venta no encontrada');
             return;
         }
 
         try {
-            // Devolver stock al inventario
+            console.log('🔄 Iniciando cancelación de venta con consolidación atómica...', venta.folio);
             const batch = window.db.batch();
-            const productos = venta.productos || venta.items || [];
+            const itemsVenta = venta.productos || venta.items || [];
 
-            for (const item of productos) {
-                const productoRef = window.db.collection('products').doc(item.productoId);
+            // 1. Agrupar items por productoId para evitar sobreescrituras (Race Conditions)
+            const itemsPorProducto = itemsVenta.reduce((acc, item) => {
+                const id = item.productoId;
+                if (!id) return acc;
+                if (!acc[id]) acc[id] = [];
+                acc[id].push(item);
+                return acc;
+            }, {});
+
+            const actualizacionesLog = [];
+
+            // 2. Procesar cada producto de forma atómica para la devolución
+            for (const productoId in itemsPorProducto) {
+                const productoRef = window.db.collection('products').doc(productoId);
                 const productoDoc = await productoRef.get();
 
-                if (!productoDoc.exists) continue;
+                if (!productoDoc.exists) {
+                    console.error(`❌ Producto no encontrado para devolución: ${productoId}`);
+                    continue;
+                }
 
                 const productoData = productoDoc.data();
+                const itemsDelProducto = itemsPorProducto[productoId];
+                
+                let dataActualizada = JSON.parse(JSON.stringify(productoData));
+                let huboCambios = false;
 
-                if (item.tipo === 'simple') {
-                    const stockActual = productoData.stock?.actual || 0;
-                    batch.update(productoRef, {
-                        'stock.actual': stockActual + item.cantidad
-                    });
-                } else if (item.tipo === 'variante-simple') {
-                    const variantesArray = Array.isArray(productoData.variantes) 
-                        ? [...productoData.variantes] 
-                        : Object.values(productoData.variantes || {});
-
-                    if (variantesArray[item.varianteIndex]) {
-                        const stockActual = variantesArray[item.varianteIndex].stock?.actual || 0;
-                        variantesArray[item.varianteIndex].stock = {
-                            ...variantesArray[item.varianteIndex].stock,
-                            actual: stockActual + item.cantidad
-                        };
-                        batch.update(productoRef, { variantes: variantesArray });
+                for (const item of itemsDelProducto) {
+                    // Normalizar tipo de forma robusta
+                    let tipoEfectivo = item.tipo;
+                    
+                    // CORRECCIÓN: Si el tipo es 'variante', determinar si es simple o con opción
+                    if (tipoEfectivo === 'variante') {
+                        tipoEfectivo = (item.opcionIndex !== undefined && item.opcionIndex !== null) 
+                            ? 'variante-opcion' 
+                            : 'variante-simple';
                     }
-                } else if (item.tipo === 'variante-opcion') {
-                    const variantesArray = Array.isArray(productoData.variantes) 
-                        ? [...productoData.variantes] 
-                        : Object.values(productoData.variantes || {});
 
-                    if (variantesArray[item.varianteIndex]) {
-                        const opcionesArray = Array.isArray(variantesArray[item.varianteIndex].opciones) 
-                            ? [...variantesArray[item.varianteIndex].opciones] 
-                            : Object.values(variantesArray[item.varianteIndex].opciones || {});
+                    if (tipoEfectivo === 'simple') {
+                        const stockActual = dataActualizada.stock?.actual || 0;
+                        const nuevoStock = stockActual + item.cantidad;
+                        if (!dataActualizada.stock) dataActualizada.stock = {};
+                        dataActualizada.stock.actual = nuevoStock;
+                        huboCambios = true;
+                        actualizacionesLog.push(`${item.nombre} (Simple): ${stockActual} → ${nuevoStock}`);
 
-                        if (opcionesArray[item.opcionIndex]) {
-                            const stockActual = opcionesArray[item.opcionIndex].stock?.actual || 0;
-                            opcionesArray[item.opcionIndex].stock = {
-                                ...opcionesArray[item.opcionIndex].stock,
-                                actual: stockActual + item.cantidad
-                            };
-                            variantesArray[item.varianteIndex].opciones = opcionesArray;
-                            batch.update(productoRef, { variantes: variantesArray });
+                    } else if (tipoEfectivo === 'variante-simple' || tipoEfectivo === 'variante') {
+                        // Asegurar que usamos el índice de variante correcto
+                        const vIndex = item.varianteIndex;
+                        const variantesArray = Array.isArray(dataActualizada.variantes) 
+                            ? dataActualizada.variantes 
+                            : Object.values(dataActualizada.variantes || {});
+
+                        if (vIndex !== undefined && vIndex !== null && variantesArray[vIndex]) {
+                            const stockActual = variantesArray[vIndex].stock?.actual || 0;
+                            const nuevoStock = stockActual + item.cantidad;
+                            if (!variantesArray[vIndex].stock) variantesArray[vIndex].stock = {};
+                            variantesArray[vIndex].stock.actual = nuevoStock;
+                            dataActualizada.variantes = variantesArray;
+                            huboCambios = true;
+                            actualizacionesLog.push(`${item.nombre} (Variante [${vIndex}]): ${stockActual} → ${nuevoStock}`);
+                        } else {
+                            console.warn(`⚠️ No se encontró la variante en el índice ${vIndex} para el producto ${item.nombre}`);
                         }
+
+                    } else if (tipoEfectivo === 'variante-opcion') {
+                        const vIndex = item.varianteIndex;
+                        const oIndex = item.opcionIndex;
+                        const variantesArray = Array.isArray(dataActualizada.variantes) 
+                            ? dataActualizada.variantes 
+                            : Object.values(dataActualizada.variantes || {});
+
+                        if (vIndex !== undefined && vIndex !== null && variantesArray[vIndex]) {
+                            const opcionesArray = Array.isArray(variantesArray[vIndex].opciones) 
+                                ? variantesArray[vIndex].opciones 
+                                : Object.values(variantesArray[vIndex].opciones || {});
+
+                            if (oIndex !== undefined && oIndex !== null && opcionesArray[oIndex]) {
+                                const stockActual = opcionesArray[oIndex].stock?.actual || 0;
+                                const nuevoStock = stockActual + item.cantidad;
+                                if (!opcionesArray[oIndex].stock) opcionesArray[oIndex].stock = {};
+                                opcionesArray[oIndex].stock.actual = nuevoStock;
+                                variantesArray[vIndex].opciones = opcionesArray;
+                                dataActualizada.variantes = variantesArray;
+                                huboCambios = true;
+                                actualizacionesLog.push(`${item.nombre} (Opción [${vIndex}][${oIndex}]): ${stockActual} → ${nuevoStock}`);
+                            } else {
+                                console.warn(`⚠️ No se encontró la opción en el índice ${oIndex} para la variante ${vIndex} del producto ${item.nombre}`);
+                            }
+                        } else {
+                            console.warn(`⚠️ No se encontró la variante en el índice ${vIndex} para el producto ${item.nombre}`);
+                        }
+
+                    } else if (tipoEfectivo === 'conversion') {
+                        const cantidadBase = (item.conversion?.cantidad || 0) * (item.cantidad || 0);
+                        const stockActual = dataActualizada.stock?.actual || 0;
+                        const nuevoStock = stockActual + cantidadBase;
+                        if (!dataActualizada.stock) dataActualizada.stock = {};
+                        dataActualizada.stock.actual = nuevoStock;
+                        huboCambios = true;
+                        actualizacionesLog.push(`${item.nombre} (Conversión): ${stockActual} → ${nuevoStock} (+${cantidadBase} base)`);
                     }
-                } else if (item.tipo === 'conversion') {
-                    const conversion = productoData.conversiones?.[item.conversionIndex];
-                    if (conversion) {
-                        const cantidadBase = conversion.cantidad * item.cantidad;
-                        const stockActual = productoData.stock?.actual || 0;
-                        batch.update(productoRef, {
-                            'stock.actual': stockActual + cantidadBase
-                        });
-                    }
+                }
+
+                if (huboCambios) {
+                    batch.update(productoRef, dataActualizada);
                 }
             }
 
-            // Actualizar estado de la venta
+            // 3. Actualizar estado de la venta
             const ventaRef = window.db.collection('sales').doc(this.ventaSeleccionada);
             batch.update(ventaRef, {
                 estado: 'cancelada',
                 motivoCancelacion: motivo,
-                fechaCancelacion: new Date(),
-                canceladoPor: window.authSystem?.currentUser?.uid || 'system'
+                fechaCancelacion: firebase.firestore.Timestamp.now(),
+                canceladoPor: (window.authSystem?.currentUser?.uid) || 'system'
             });
 
+            console.log('📦 Aplicando devoluciones en batch:', actualizacionesLog);
             await batch.commit();
 
-            alert('✅ Venta cancelada exitosamente. El stock ha sido devuelto al inventario.');
+            alert('✅ Venta cancelada exitosamente. El stock ha sido devuelto al inventario de forma precisa.');
 
             // Recargar datos
             await this.cargarVentas();
             await this.cargarProductos();
             this.renderHistorial();
             this.actualizarEstadisticas();
-
             this.cerrarModalCancelarVenta();
 
         } catch (error) {
-            console.error('Error al cancelar venta:', error);
+            console.error('❌ Error crítico cancelando venta:', error);
             alert('❌ Error al cancelar la venta: ' + error.message);
         }
     }
