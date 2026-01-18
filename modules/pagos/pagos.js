@@ -34,6 +34,9 @@ class PagosModule {
             this.renderUltimosMovimientos();
             this.renderCalendario();
             
+            // 🚀 SINCRONIZACIÓN DE ABONOS ANTIGUOS (One-time check)
+            this.sincronizarAbonosAntiguos();
+            
             console.log('✅ Módulo de pagos inicializado');
         } catch (error) {
             console.error('Error inicializando módulo de pagos:', error);
@@ -83,67 +86,56 @@ class PagosModule {
     setupModalEventListeners() {
         console.log('🔧 Configurando event listeners de modales de pagos...');
         
-        // Event listeners del modal de movimiento
-        const modalMovimiento = document.getElementById('modal-movimiento');
-        const closeMovimiento = document.getElementById('modal-movimiento-close');
-        const btnCancelarMovimiento = document.getElementById('btn-cancelar-movimiento');
         const formMovimiento = document.getElementById('form-movimiento');
-
-        if (closeMovimiento) {
-            closeMovimiento.addEventListener('click', () => this.cerrarModal('modal-movimiento'));
-        }
-
-        if (btnCancelarMovimiento) {
-            btnCancelarMovimiento.addEventListener('click', () => this.cerrarModal('modal-movimiento'));
-        }
-
         if (formMovimiento) {
-            formMovimiento.addEventListener('submit', (e) => {
+            // Eliminar listeners previos para evitar duplicidad
+            const newForm = formMovimiento.cloneNode(true);
+            formMovimiento.parentNode.replaceChild(newForm, formMovimiento);
+            
+            newForm.addEventListener('submit', (e) => {
                 e.preventDefault();
                 this.guardarMovimiento();
             });
         }
 
+        const modalMovimiento = document.getElementById('modal-movimiento');
+        const closeMovimiento = document.getElementById('modal-movimiento-close');
+        const btnCancelarMovimiento = document.getElementById('btn-cancelar-movimiento');
+
+        if (closeMovimiento) {
+            closeMovimiento.onclick = () => this.cerrarModal('modal-movimiento');
+        }
+
+        if (btnCancelarMovimiento) {
+            btnCancelarMovimiento.onclick = () => this.cerrarModal('modal-movimiento');
+        }
+
         if (modalMovimiento) {
-            modalMovimiento.addEventListener('click', (e) => {
+            modalMovimiento.onclick = (e) => {
                 if (e.target === modalMovimiento) {
                     this.cerrarModal('modal-movimiento');
                 }
-            });
+            };
         }
 
         // Event listeners del modal de nómina MULTIPAGO
-        const modalNomina = document.getElementById('modal-pago-nomina');
-        const closeNomina = document.getElementById('modal-nomina-close');
-        const btnCancelarNomina = document.getElementById('btn-cancelar-nomina');
         const btnAgregarPago = document.getElementById('btn-agregar-pago');
         const btnGuardarMultipago = document.getElementById('btn-guardar-multipago');
+        const closeNomina = document.getElementById('modal-nomina-close');
+        const btnCancelarNomina = document.getElementById('btn-cancelar-nomina');
+        const modalNomina = document.getElementById('modal-pago-nomina');
 
-        if (closeNomina) {
-            closeNomina.addEventListener('click', () => this.cerrarModal('modal-pago-nomina'));
-        }
-
-        if (btnCancelarNomina) {
-            btnCancelarNomina.addEventListener('click', () => this.cerrarModal('modal-pago-nomina'));
-        }
-
-        if (btnAgregarPago) {
-            btnAgregarPago.addEventListener('click', () => this.agregarPagoMultipago());
-        }
-
-        if (btnGuardarMultipago) {
-            btnGuardarMultipago.addEventListener('click', () => this.guardarPagosMultipago());
-        }
-
+        if (closeNomina) closeNomina.onclick = () => this.cerrarModal('modal-pago-nomina');
+        if (btnCancelarNomina) btnCancelarNomina.onclick = () => this.cerrarModal('modal-pago-nomina');
+        if (btnAgregarPago) btnAgregarPago.onclick = () => this.agregarPagoMultipago();
+        if (btnGuardarMultipago) btnGuardarMultipago.onclick = () => this.guardarPagosMultipago();
         if (modalNomina) {
-            modalNomina.addEventListener('click', (e) => {
-                if (e.target === modalNomina) {
-                    this.cerrarModal('modal-pago-nomina');
-                }
-            });
+            modalNomina.onclick = (e) => {
+                if (e.target === modalNomina) this.cerrarModal('modal-pago-nomina');
+            };
         }
 
-        console.log('✅ Event listeners de modales de pagos configurados');
+        console.log('✅ Event listeners de modales de pagos configurados (Anti-duplicidad)');
     }
 
     setupEventListeners() {
@@ -503,16 +495,29 @@ class PagosModule {
     }
 
     async guardarMovimiento() {
+        if (this.isSaving) return; // 🛡️ Bloqueo de re-entrada (evita doble click)
+        
+        const btnGuardar = document.querySelector('#form-movimiento button[type="submit"]');
+        if (btnGuardar) {
+            btnGuardar.disabled = true;
+            btnGuardar.innerHTML = '<span>Procesando...</span>';
+        }
+
+        this.isSaving = true;
         this.showLoading();
 
         try {
             const tipo = document.getElementById('tipo-movimiento').value;
-            const concepto = document.getElementById('concepto-movimiento').value;
+            const concepto = document.getElementById('concepto-movimiento').value.trim();
             const monto = parseFloat(document.getElementById('monto-movimiento').value);
             const categoria = document.getElementById('categoria-movimiento').value;
-            const observaciones = document.getElementById('observaciones-movimiento').value;
+            const observaciones = document.getElementById('observaciones-movimiento').value.trim();
 
-            const userId = window.authSystem?.currentUser?.uid;
+            if (!concepto || isNaN(monto) || monto <= 0) {
+                throw new Error('Por favor completa todos los campos correctamente');
+            }
+
+            const userId = window.authSystem?.currentUser?.uid || 'unknown';
             const userName = window.authSystem?.currentUser?.nombre || 'Sistema';
 
             const movimiento = {
@@ -523,7 +528,11 @@ class PagosModule {
                 observaciones,
                 fecha: firebase.firestore.Timestamp.fromDate(new Date()),
                 registradoPor: userId,
-                registradoPorNombre: userName
+                registradoPorNombre: userName,
+                metadata: {
+                    createdAt: new Date(),
+                    device: navigator.userAgent
+                }
             };
 
             await window.db.collection('pagos').add(movimiento);
@@ -540,8 +549,13 @@ class PagosModule {
             this.showNotification(`${tipo === 'ingreso' ? 'Ingreso' : 'Egreso'} registrado correctamente`, 'success');
         } catch (error) {
             console.error('Error guardando movimiento:', error);
-            this.showNotification('Error al guardar el movimiento', 'error');
+            this.showNotification(error.message || 'Error al guardar el movimiento', 'error');
         } finally {
+            this.isSaving = false;
+            if (btnGuardar) {
+                btnGuardar.disabled = false;
+                btnGuardar.innerHTML = '<span>Guardar Movimiento</span>';
+            }
             this.hideLoading();
         }
     }
@@ -899,6 +913,93 @@ class PagosModule {
                 </tr>
             `;
         }).join('');
+    }
+
+    async sincronizarAbonosAntiguos() {
+        // Usar una clave más específica para asegurar que corra al menos una vez tras la corrección
+        const syncKey = 'abonos_sincronizados_v2'; 
+        if (localStorage.getItem(syncKey)) return;
+
+        console.log('🔄 Iniciando sincronización de abonos antiguos...');
+        try {
+            // 1. Obtener todos los abonos (asegurando que db esté disponible)
+            const db = window.db;
+            if (!db) {
+                console.warn('⚠️ Base de datos no disponible para sincronización');
+                return;
+            }
+
+            const abonosSnapshot = await db.collection('abonos').get();
+            if (abonosSnapshot.empty) {
+                console.log('ℹ️ No hay abonos para sincronizar.');
+                localStorage.setItem(syncKey, 'true');
+                return;
+            }
+
+            // 2. Obtener todos los pagos existentes que sean abonos para evitar duplicados
+            const pagosSnapshot = await db.collection('pagos').where('categoria', '==', 'Abonos Créditos').get();
+            const referenciasExistentes = new Set();
+            pagosSnapshot.forEach(doc => {
+                const data = doc.data();
+                if (data.referenciaId) referenciasExistentes.add(data.referenciaId);
+            });
+
+            const batch = db.batch();
+            let count = 0;
+
+            for (const doc of abonosSnapshot.docs) {
+                const abono = doc.data();
+                if (!referenciasExistentes.has(doc.id)) {
+                    const nuevoPagoRef = db.collection('pagos').doc();
+                    
+                    // Normalizar fecha
+                    let fechaAbono = abono.fecha;
+                    if (!fechaAbono) {
+                        fechaAbono = firebase.firestore.Timestamp.now();
+                    }
+
+                    batch.set(nuevoPagoRef, {
+                        tipo: 'ingreso',
+                        concepto: `Sincronización: Abono de ${abono.clienteNombre || 'Cliente'} (Venta: ${abono.folioVenta || 'N/A'})`,
+                        monto: parseFloat(abono.monto) || 0,
+                        categoria: 'Abonos Créditos',
+                        observaciones: abono.notas || 'Sincronización de abono antiguo',
+                        fecha: fechaAbono,
+                        registradoPor: abono.recibidoPor || 'system',
+                        registradoPorNombre: abono.recibidoPorNombre || 'Sistema',
+                        referenciaId: doc.id,
+                        ventaId: abono.ventaId || null,
+                        metadata: { 
+                            sincronizado: true, 
+                            fechaSincronizacion: firebase.firestore.Timestamp.now() 
+                        }
+                    });
+                    count++;
+                }
+            }
+
+            if (count > 0) {
+                await batch.commit();
+                console.log(`✅ Se sincronizaron ${count} abonos antiguos a la caja mayor.`);
+                
+                // Forzar recarga de datos en el módulo
+                await this.cargarMovimientos();
+                this.actualizarEstadisticas();
+                this.renderUltimosMovimientos();
+                
+                if (this.currentTab === 'historial') {
+                    this.renderHistorial();
+                }
+                
+                this.showNotification(`✅ Se sincronizaron ${count} abonos antiguos con la caja mayor`, 'success');
+            } else {
+                console.log('ℹ️ Todos los abonos ya estaban sincronizados.');
+            }
+
+            localStorage.setItem(syncKey, 'true');
+        } catch (error) {
+            console.error('❌ Error sincronizando abonos antiguos:', error);
+        }
     }
 
     renderHistorialNomina() {

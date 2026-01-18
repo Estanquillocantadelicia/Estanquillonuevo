@@ -968,124 +968,133 @@ class ComprasModule {
     }
 
     async actualizarInventario(items) {
-        const batch = window.db.batch();
+        this.showLoading();
+        try {
+            // 1. Agrupar items por producto para evitar conflictos de escritura (batches de Firestore)
+            const productosAgrupados = items.reduce((acc, item) => {
+                const id = item.producto.id;
+                if (!acc[id]) acc[id] = [];
+                acc[id].push(item);
+                return acc;
+            }, {});
 
-        for (const item of items) {
-            const productoRef = window.db.collection('products').doc(item.producto.id);
-            const productoDoc = await productoRef.get();
-            
-            if (!productoDoc.exists) continue;
+            const batch = window.db.batch();
 
-            const producto = productoDoc.data();
-            const cantidad = parseInt(item.cantidad) || 0;
-            const updateData = {};
-
-            // 🛠️ PATRÓN DE VENTAS (PROBADO Y SEGURO): Actualización por reemplazo de array
-            // Basado en modules/ventas/ventas.js para evitar corrupción de nombres
-            
-            if (item.tipo === 'simple') {
-                const nuevoStock = (producto.stock?.actual || 0) + cantidad;
-                updateData['stock.actual'] = nuevoStock;
-
-                if (item.preciosEditados) {
-                    updateData['precio.costo'] = Number(item.preciosEditados.costo);
-                    updateData['precio.publico'] = Number(item.preciosEditados.publico);
-                    updateData['precio.mayorista'] = Number(item.preciosEditados.mayorista);
-                }
-                batch.update(productoRef, updateData);
-
-            } else if (item.tipo === 'variante-simple') {
-                const variantesArray = Array.isArray(producto.variantes) 
-                    ? [...producto.variantes] 
-                    : Object.values(producto.variantes || {});
+            for (const [productoId, itemsProducto] of Object.entries(productosAgrupados)) {
+                const productoRef = window.db.collection('products').doc(productoId);
+                const productoDoc = await productoRef.get();
                 
-                const vIdx = item.varianteIndex;
-                if (variantesArray[vIdx]) {
-                    const nuevoStock = (variantesArray[vIdx].stock?.actual || 0) + cantidad;
-                    
-                    // Actualizamos el objeto en memoria primero
-                    variantesArray[vIdx].stock = {
-                        ...variantesArray[vIdx].stock,
-                        actual: nuevoStock
-                    };
-
-                    if (item.preciosEditados) {
-                        variantesArray[vIdx].precio = {
-                            ...variantesArray[vIdx].precio,
-                            costo: Number(item.preciosEditados.costo),
-                            publico: Number(item.preciosEditados.publico),
-                            mayorista: Number(item.preciosEditados.mayorista)
-                        };
-                    }
-                    
-                    // Enviamos el array completo para asegurar la integridad de la estructura
-                    batch.update(productoRef, { variantes: variantesArray });
+                if (!productoDoc.exists) {
+                    console.warn(`⚠️ Producto ${productoId} no encontrado, saltando...`);
+                    continue;
                 }
 
-            } else if (item.tipo === 'variante-opcion') {
-                const variantesArray = Array.isArray(producto.variantes) 
-                    ? [...producto.variantes] 
-                    : Object.values(producto.variantes || {});
+                const productoOriginal = productoDoc.data();
+                const updateData = {};
                 
-                const vIdx = item.varianteIndex;
-                const oIdx = item.opcionIndex;
-                
-                if (variantesArray[vIdx]) {
-                    const opcionesArray = Array.isArray(variantesArray[vIdx].opciones) 
-                        ? [...variantesArray[vIdx].opciones] 
-                        : Object.values(variantesArray[vIdx].opciones || {});
-                    
-                    if (opcionesArray[oIdx]) {
-                        const nuevoStock = (opcionesArray[oIdx].stock?.actual || 0) + cantidad;
+                // Procesar todos los cambios para este producto específico
+                for (const item of itemsProducto) {
+                    const cantidad = parseInt(item.cantidad) || 0;
+
+                    if (item.tipo === 'simple') {
+                        const stockActual = (updateData['stock.actual'] !== undefined) 
+                            ? updateData['stock.actual'] 
+                            : (productoOriginal.stock?.actual || 0);
                         
-                        opcionesArray[oIdx].stock = {
-                            ...opcionesArray[oIdx].stock,
-                            actual: nuevoStock
-                        };
-                        
-                        variantesArray[vIdx].opciones = opcionesArray;
+                        updateData['stock.actual'] = stockActual + cantidad;
 
                         if (item.preciosEditados) {
-                            variantesArray[vIdx].precio = {
-                                ...variantesArray[vIdx].precio,
-                                costo: Number(item.preciosEditados.costo),
-                                publico: Number(item.preciosEditados.publico),
-                                mayorista: Number(item.preciosEditados.mayorista)
-                            };
+                            updateData['precio.costo'] = Number(item.preciosEditados.costo);
+                            updateData['precio.publico'] = Number(item.preciosEditados.publico);
+                            updateData['precio.mayorista'] = Number(item.preciosEditados.mayorista);
                         }
+
+                    } else if (item.tipo === 'variante-simple' || item.tipo === 'variante-opcion') {
+                        // Usamos copia local del array de variantes para cambios múltiples en el mismo producto
+                        if (!updateData.variantes) {
+                            updateData.variantes = Array.isArray(productoOriginal.variantes) 
+                                ? [...productoOriginal.variantes] 
+                                : Object.values(productoOriginal.variantes || {});
+                        }
+
+                        const vIdx = item.varianteIndex;
+                        if (updateData.variantes[vIdx]) {
+                            if (item.tipo === 'variante-simple') {
+                                const stockActual = (updateData.variantes[vIdx].stock?.actual || 0);
+                                updateData.variantes[vIdx].stock = {
+                                    ...updateData.variantes[vIdx].stock,
+                                    actual: stockActual + cantidad
+                                };
+                            } else {
+                                // variante-opcion
+                                const oIdx = item.opcionIndex;
+                                if (!updateData.variantes[vIdx].opciones) updateData.variantes[vIdx].opciones = [];
+                                
+                                const opciones = Array.isArray(updateData.variantes[vIdx].opciones)
+                                    ? [...updateData.variantes[vIdx].opciones]
+                                    : Object.values(updateData.variantes[vIdx].opciones || {});
+                                
+                                if (opciones[oIdx]) {
+                                    const stockActual = (opciones[oIdx].stock?.actual || 0);
+                                    opciones[oIdx].stock = {
+                                        ...opciones[oIdx].stock,
+                                        actual: stockActual + cantidad
+                                    };
+                                    updateData.variantes[vIdx].opciones = opciones;
+                                }
+                            }
+
+                            // Actualizar precio de la variante si se editó
+                            if (item.preciosEditados) {
+                                updateData.variantes[vIdx].precio = {
+                                    ...updateData.variantes[vIdx].precio,
+                                    costo: Number(item.preciosEditados.costo),
+                                    publico: Number(item.preciosEditados.publico),
+                                    mayorista: Number(item.preciosEditados.mayorista)
+                                };
+                            }
+                        }
+
+                    } else if (item.tipo === 'conversion') {
+                        const stockActualBase = (updateData['stock.actual'] !== undefined)
+                            ? updateData['stock.actual']
+                            : (productoOriginal.stock?.actual || 0);
                         
-                        batch.update(productoRef, { variantes: variantesArray });
+                        const conversiones = updateData.conversiones || (Array.isArray(productoOriginal.conversiones) 
+                            ? [...productoOriginal.conversiones] 
+                            : Object.values(productoOriginal.conversiones || {}));
+
+                        const cIdx = item.conversionIndex;
+                        if (conversiones[cIdx]) {
+                            const factor = Number(conversiones[cIdx].cantidad) || 1;
+                            updateData['stock.actual'] = stockActualBase + (cantidad * factor);
+
+                            if (item.preciosEditados) {
+                                conversiones[cIdx].precio = {
+                                    ...conversiones[cIdx].precio,
+                                    costo: Number(item.preciosEditados.costo),
+                                    publico: Number(item.preciosEditados.publico),
+                                    mayorista: Number(item.preciosEditados.mayorista)
+                                };
+                                updateData.conversiones = conversiones;
+                            }
+                        }
                     }
                 }
 
-            } else if (item.tipo === 'conversion') {
-                const conversionesArray = Array.isArray(producto.conversiones) 
-                    ? [...producto.conversiones] 
-                    : Object.values(producto.conversiones || {});
-                
-                const cIdx = item.conversionIndex;
-                if (conversionesArray[cIdx]) {
-                    const cantidadUnidadBase = cantidad * (Number(conversionesArray[cIdx].cantidad) || 1);
-                    const nuevoStock = (producto.stock?.actual || 0) + cantidadUnidadBase;
-                    
-                    updateData['stock.actual'] = nuevoStock;
-
-                    if (item.preciosEditados) {
-                        conversionesArray[cIdx].precio = {
-                            ...conversionesArray[cIdx].precio,
-                            costo: Number(item.preciosEditados.costo),
-                            publico: Number(item.preciosEditados.publico),
-                            mayorista: Number(item.preciosEditados.mayorista)
-                        };
-                        updateData['conversiones'] = conversionesArray;
-                    }
-                    
+                // Aplicar todos los cambios acumulados para este producto
+                if (Object.keys(updateData).length > 0) {
                     batch.update(productoRef, updateData);
                 }
             }
-        }
 
-        await batch.commit();
+            await batch.commit();
+            console.log('✅ Inventario actualizado correctamente agrupando por producto');
+
+        } catch (error) {
+            console.error('❌ Error en actualizarInventario:', error);
+            throw error; // Re-lanzar para que lo capture procesarCompra
+        }
     }
 
     async actualizarEstadisticas() {

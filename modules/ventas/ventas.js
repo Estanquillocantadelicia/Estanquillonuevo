@@ -3484,7 +3484,15 @@ Visita: https://console.firebase.google.com/project/app-estanquillo/firestore/in
                     ? producto.conversiones 
                     : Object.values(producto.conversiones || {});
                 const conversion = conversionesArray[item.conversionIndex];
-                costo = conversion?.precio?.costo || 0;
+                
+                if (conversion) {
+                    // El costo de la conversión DEBE ser: costo unidad base * cantidad de la conversión
+                    const costoUnidadBase = producto.precio?.costo || 0;
+                    const cantidadEnConversion = conversion.cantidad || 1;
+                    costo = costoUnidadBase * cantidadEnConversion;
+                } else {
+                    costo = 0;
+                }
             }
 
             // Calcular utilidad: (precio de venta - costo) * cantidad
@@ -3779,7 +3787,19 @@ Visita: https://console.firebase.google.com/project/app-estanquillo/firestore/in
             console.log('📦 Aplicando devoluciones en batch:', actualizacionesLog);
             await batch.commit();
 
-            alert('✅ Venta cancelada exitosamente. El stock ha sido devuelto al inventario de forma precisa.');
+            // 🚀 NOTIFICAR AL SISTEMA DE CAJA (Evento Global)
+            if (window.eventBus) {
+                window.eventBus.emit('venta:cancelada', {
+                    ventaId: this.ventaSeleccionada,
+                    folio: venta.folio,
+                    total: venta.total,
+                    metodoPago: venta.metodoPago,
+                    vendedorId: venta.vendedorId,
+                    fechaCancelacion: new Date()
+                });
+            }
+
+            alert('✅ Venta cancelada exitosamente. El stock ha sido devuelto al inventario y el movimiento ha sido reversado en caja.');
 
             // Recargar datos
             await this.cargarVentas();

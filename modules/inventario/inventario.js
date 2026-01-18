@@ -3631,16 +3631,28 @@ class InventarioModule {
     }
 
     async saveProducto() {
+        const isEditing = this.editingProducto !== null;
+        const btnGuardar = document.querySelector('#form-producto button[type="submit"]');
+        const originalText = btnGuardar ? btnGuardar.innerHTML : '';
+        
+        if (btnGuardar) {
+            btnGuardar.disabled = true;
+            btnGuardar.innerHTML = `<span><i class="fas fa-spinner fa-spin"></i> ${isEditing ? 'Editando...' : 'Guardando...'}</span>`;
+        }
+
         this.showLoading();
 
         try {
             const formData = new FormData(document.getElementById('form-producto'));
-            const isEditing = this.editingProducto !== null;
-
+            
             // Validar proveedor
             const proveedorId = formData.get('proveedor');
             if (!proveedorId) {
                 this.showNotification('Debes seleccionar un proveedor', 'error');
+                if (btnGuardar) {
+                    btnGuardar.disabled = false;
+                    btnGuardar.innerHTML = originalText;
+                }
                 this.hideLoading();
                 return;
             }
@@ -3718,18 +3730,13 @@ class InventarioModule {
                 };
             }
 
-            // Guardar o actualizar con limpieza estricta (usando set sin merge para el objeto raíz si es necesario, 
-            // pero aquí mantenemos set con merge: true para no borrar metadatos externos si existieran, 
-            // aunque productoData ya va limpio)
+            // Guardar o actualizar con limpieza estricta
             if (isEditing) {
                 const docRef = window.db.collection('products').doc(this.editingProducto.id);
                 
-                // Si cambiamos el tipo de producto, es mejor sobrescribir el documento para eliminar campos obsoletos
-                if (this.editingProducto.tipo !== this.currentTipoProducto) {
-                    await docRef.set(productoData);
-                } else {
-                    await docRef.set(productoData, { merge: true });
-                }
+                // IMPORTANTE: Sobrescribir el documento completo para eliminar campos obsoletos de otros tipos
+                // Esto evita que datos de "variantes" queden en un producto "simple" y viceversa
+                await docRef.set(productoData);
                 
                 const index = this.productos.findIndex(p => p.id === this.editingProducto.id);
                 if (index !== -1) {
@@ -3755,6 +3762,10 @@ class InventarioModule {
             console.error('Error:', error);
             this.showNotification('Error al guardar producto: ' + error.message, 'error');
         } finally {
+            if (btnGuardar) {
+                btnGuardar.disabled = false;
+                btnGuardar.innerHTML = originalText;
+            }
             this.hideLoading();
         }
     }
@@ -3762,50 +3773,72 @@ class InventarioModule {
     extractVariantes(formData) {
         const variantes = [];
         for (let i = 0; i < this.varianteCounter; i++) {
+            const nombreInput = document.querySelector(`input[name="variante_nombre_${i}"]`);
+            if (!nombreInput) continue; // Si el elemento no existe en el DOM, saltar
+
             const nombre = formData.get(`variante_nombre_${i}`);
             if (nombre) {
                 const tieneOpciones = formData.get(`variante_tiene_opciones_${i}`) === 'on';
                 const codigoBarras = formData.get(`variante_codigo_${i}`);
+                
+                // Buscar stock actual existente si estamos editando para no perderlo
+                let stockActualExistente = 0;
+                if (this.editingProducto && this.editingProducto.variantes) {
+                    const vExistente = this.editingProducto.variantes[i];
+                    if (vExistente) stockActualExistente = vExistente.stock?.actual || 0;
+                }
+
                 const variante = {
                     nombre: window.inputSanitizer ? window.inputSanitizer.sanitizeText(nombre) : nombre,
                     codigoBarras: codigoBarras ? (window.inputSanitizer ? window.inputSanitizer.sanitizeText(codigoBarras) : codigoBarras) : null,
                     precio: {
-                        costo: parseFloat(formData.get(`variante_costo_${i}`)),
-                        publico: parseFloat(formData.get(`variante_publico_${i}`)),
-                        mayorista: parseFloat(formData.get(`variante_mayorista_${i}`))
+                        costo: parseFloat(formData.get(`variante_costo_${i}`)) || 0,
+                        publico: parseFloat(formData.get(`variante_publico_${i}`)) || 0,
+                        mayorista: parseFloat(formData.get(`variante_mayorista_${i}`)) || 0
                     },
                     stock: {
-                        minimo: parseInt(formData.get(`variante_minimo_${i}`))
+                        actual: stockActualExistente, // Valor por defecto
+                        minimo: parseInt(formData.get(`variante_minimo_${i}`)) || 0
                     }
                 };
 
                 if (tieneOpciones) {
-                    // Extraer opciones de esta variante
                     const opciones = [];
                     const opcionesContainer = document.getElementById(`opciones-container-${i}`);
-                    const opcionElements = opcionesContainer.querySelectorAll('.opcion-item');
+                    if (opcionesContainer) {
+                        const opcionElements = opcionesContainer.querySelectorAll('.opcion-item');
 
-                    opcionElements.forEach((opcionEl, opcionIndex) => {
-                        const opcionNombre = formData.get(`variante_${i}_opcion_nombre_${opcionIndex}`);
-                        if (opcionNombre) {
-                            const opcionCodigo = formData.get(`variante_${i}_opcion_codigo_${opcionIndex}`);
-                            opciones.push({
-                                nombre: window.inputSanitizer ? window.inputSanitizer.sanitizeText(opcionNombre) : opcionNombre,
-                               codigoBarras: opcionCodigo ? (window.inputSanitizer ? window.inputSanitizer.sanitizeText(opcionCodigo) : opcionCodigo) : null,
-                                stock: {
-                                    actual: parseInt(formData.get(`variante_${i}_opcion_stock_${opcionIndex}`)),
-                                    minimo: parseInt(formData.get(`variante_minimo_${i}`))
+                        opcionElements.forEach((opcionEl, opcionIndex) => {
+                            const opcionNombre = formData.get(`variante_${i}_opcion_nombre_${opcionIndex}`);
+                            if (opcionNombre) {
+                                const opcionCodigo = formData.get(`variante_${i}_opcion_codigo_${opcionIndex}`);
+                                const stockInputVal = formData.get(`variante_${i}_opcion_stock_${opcionIndex}`);
+                                
+                                // Si el input de stock tiene valor, usarlo, si no, intentar mantener el existente
+                                let stockOpcion = parseInt(stockInputVal);
+                                if (isNaN(stockOpcion) && this.editingProducto && this.editingProducto.variantes?.[i]?.opciones?.[opcionIndex]) {
+                                    stockOpcion = this.editingProducto.variantes[i].opciones[opcionIndex].stock?.actual || 0;
                                 }
-                            });
-                        }
-                    });
+
+                                opciones.push({
+                                    nombre: window.inputSanitizer ? window.inputSanitizer.sanitizeText(opcionNombre) : opcionNombre,
+                                    codigoBarras: opcionCodigo ? (window.inputSanitizer ? window.inputSanitizer.sanitizeText(opcionCodigo) : opcionCodigo) : null,
+                                    stock: {
+                                        actual: isNaN(stockOpcion) ? 0 : stockOpcion,
+                                        minimo: variante.stock.minimo
+                                    }
+                                });
+                            }
+                        });
+                    }
 
                     variante.opciones = opciones;
-                    // Stock total es la suma de todas las opciones
-                    variante.stock.actual = opciones.reduce((sum, op) => sum + op.stock.actual, 0);
+                    variante.stock.actual = opciones.reduce((sum, op) => sum + (op.stock.actual || 0), 0);
                 } else {
-                    // Variante sin opciones
-                    variante.stock.actual = parseInt(formData.get(`variante_stock_${i}`));
+                    const stockInputVal = formData.get(`variante_stock_${i}`);
+                    if (stockInputVal !== null && stockInputVal !== "") {
+                        variante.stock.actual = parseInt(stockInputVal) || 0;
+                    }
                 }
 
                 variantes.push(variante);

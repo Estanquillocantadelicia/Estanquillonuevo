@@ -870,7 +870,27 @@ class CreditosModule {
         };
 
         // Guardar abono en colección de abonos
-        await window.db.collection('abonos').add(abonoData);
+        const abonoDoc = await window.db.collection('abonos').add(abonoData);
+
+        // 🚀 SINCRONIZACIÓN CON CAJA MAYOR (Módulo de Pagos)
+        // Registrar el abono como un ingreso en la colección 'pagos' para que sume al saldo global
+        try {
+            await window.db.collection('pagos').add({
+                tipo: 'ingreso',
+                concepto: `Abono de cliente: ${this.clienteSeleccionado.nombre} (Venta: ${venta.folio})`,
+                monto: monto,
+                categoria: 'Abonos Créditos',
+                observaciones: notas || `Abono a venta ${venta.folio}`,
+                fecha: firebase.firestore.Timestamp.fromDate(new Date()),
+                registradoPor: abonoData.recibidoPor,
+                registradoPorNombre: abonoData.recibidoPorNombre,
+                referenciaId: abonoDoc.id,
+                ventaId: venta.id
+            });
+            console.log('✅ Abono sincronizado con el saldo de caja mayor');
+        } catch (cajaError) {
+            console.error('❌ Error al sincronizar abono con caja mayor:', cajaError);
+        }
 
         // Actualizar venta
         const ventaRef = window.db.collection('sales').doc(venta.id);
@@ -972,7 +992,25 @@ class CreditosModule {
 
         // Guardar todos los abonos en la colección de abonos
         for (const abono of abonosRegistrados) {
-            await window.db.collection('abonos').add(abono);
+            const abonoDoc = await window.db.collection('abonos').add(abono);
+            
+            // 🚀 SINCRONIZACIÓN CON CAJA MAYOR (Módulo de Pagos)
+            try {
+                await window.db.collection('pagos').add({
+                    tipo: 'ingreso',
+                    concepto: `Abono General: ${this.clienteSeleccionado.nombre} (Venta: ${abono.folioVenta})`,
+                    monto: abono.monto,
+                    categoria: 'Abonos Créditos',
+                    observaciones: notas || 'Abono general automático',
+                    fecha: firebase.firestore.Timestamp.fromDate(new Date()),
+                    registradoPor: abono.recibidoPor,
+                    registradoPorNombre: abono.recibidoPorNombre,
+                    referenciaId: abonoDoc.id,
+                    ventaId: abono.ventaId
+                });
+            } catch (cajaError) {
+                console.error('❌ Error al sincronizar abono general con caja mayor:', cajaError);
+            }
         }
 
         await batch.commit();

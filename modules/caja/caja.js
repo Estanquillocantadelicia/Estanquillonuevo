@@ -251,44 +251,91 @@ class CajaModule {
         // Escuchar evento de venta completada
         this.unsubscribeVentaCompletada = window.eventBus.on('venta:completada', async (event) => {
             const data = event.detail;
-            console.log('📡 Evento recibido en módulo de caja:', data);
-
-            // Verificar si hay caja abierta
-            if (!this.cajaActual) {
-                console.log('ℹ️ No hay caja abierta, ignorando evento');
-                return;
-            }
-
-            // Verificar si la venta es del mismo vendedor
-            const userId = window.authSystem?.currentUser?.uid;
-            if (data.vendedorId !== userId) {
-                console.log('ℹ️ Venta de otro vendedor, ignorando');
-                return;
-            }
-
-            console.log('🔄 Actualizando módulo de caja por evento global...');
-
-            try {
-                // Recargar datos
-                await this.cargarVentasTurno();
-
-                // Actualizar UI
-                this.renderEstadoCaja();
-
-                if (this.currentTab === 'turno-actual') {
-                    this.renderVentasTurno();
-                }
-
-                // Mostrar notificación
-                this.showNotification(`✅ Nueva venta registrada: ${data.folio}`, 'success');
-
-                console.log('✅ Módulo de caja actualizado por evento global');
-            } catch (error) {
-                console.error('❌ Error actualizando por evento:', error);
-            }
+            console.log('📡 Evento recibido en módulo de caja (venta completada):', data);
+            await this.procesarEventoVenta(data, 'completada');
         }, this.moduleId);
 
-        console.log('📡 Listener de eventos globales configurado');
+        // Escuchar evento de venta cancelada
+        this.unsubscribeVentaCancelada = window.eventBus.on('venta:cancelada', async (event) => {
+            const data = event.detail;
+            console.log('📡 Evento recibido en módulo de caja (venta cancelada):', data);
+            await this.procesarEventoVenta(data, 'cancelada');
+        }, this.moduleId);
+
+        console.log('📡 Listeners de eventos globales configurados (ventas)');
+    }
+
+    async procesarEventoVenta(data, tipoEvento) {
+        // Verificar si hay caja abierta
+        if (!this.cajaActual) {
+            console.log('ℹ️ No hay caja abierta, ignorando evento');
+            return;
+        }
+
+        // Verificar si la venta es del mismo vendedor
+        const userId = window.authSystem?.currentUser?.uid;
+        if (data.vendedorId !== userId) {
+            console.log('ℹ️ Venta de otro vendedor, ignorando');
+            return;
+        }
+
+        try {
+            // Si es una cancelación y el método fue EFECTIVO, registrar contra-movimiento
+            if (tipoEvento === 'cancelada' && data.metodoPago?.toLowerCase() === 'efectivo') {
+                console.log('💰 Reversando efectivo por venta cancelada:', data.folio);
+                await this.registrarMovimientoCancelacion(data);
+            }
+
+            // Recargar datos
+            await this.cargarVentasTurno();
+
+            // Actualizar UI
+            this.renderEstadoCaja();
+
+            if (this.currentTab === 'turno-actual') {
+                this.renderVentasTurno();
+            }
+
+            // Mostrar notificación
+            const msg = tipoEvento === 'completada' 
+                ? `✅ Nueva venta registrada: ${data.folio}`
+                : `⚠️ Venta cancelada y efectivo reversado: ${data.folio}`;
+            
+            this.showNotification(msg, tipoEvento === 'completada' ? 'success' : 'warning');
+
+        } catch (error) {
+            console.error('❌ Error actualizando por evento:', error);
+        }
+    }
+
+    async registrarMovimientoCancelacion(venta) {
+        if (!this.cajaActual) return;
+
+        try {
+            const movimiento = {
+                id: window.db.collection('cajas').doc().id,
+                tipo: 'egreso',
+                monto: parseFloat(venta.total),
+                descripcion: `REVERSO VENTA CANCELADA - Folio: ${venta.folio}`,
+                categoria: 'Cancelación',
+                fecha: firebase.firestore.Timestamp.now(),
+                vendedorId: venta.vendedorId,
+                vendedorNombre: window.authSystem?.currentUser?.displayName || 'Vendedor',
+                isAuto: true // Movimiento automático por el sistema
+            };
+
+            const nuevosMovimientos = [...(this.cajaActual.movimientos || []), movimiento];
+            
+            await window.db.collection('cajas').doc(this.cajaActual.id).update({
+                movimientos: nuevosMovimientos,
+                'metadatos.ultimaActualizacion': firebase.firestore.Timestamp.now()
+            });
+
+            console.log('✅ Movimiento de reverso registrado en caja');
+        } catch (error) {
+            console.error('❌ Error registrando reverso en caja:', error);
+            throw error;
+        }
     }
 
     setupRealtimeSync() {
@@ -360,7 +407,7 @@ class CajaModule {
         console.log('🔄 Sincronización en tiempo real activada');
     }
 
-    setupVentasListener() {
+    async setupVentasListener() {
         if (!this.cajaActual) {
             console.log('⚠️ No se puede configurar listener: no hay caja abierta');
             return;
@@ -393,14 +440,15 @@ class CajaModule {
 
                 console.log(`📋 Ventas totales del vendedor: ${todasLasVentas.length}`);
 
-                // FILTRADO MANUAL: Solo ventas completadas y dentro del rango de fechas
+                // FILTRADO MANUAL: Solo ventas que NO estén canceladas y dentro del rango de fechas
                 const timestampApertura = firebase.firestore.Timestamp.fromDate(fechaApertura);
                 const timestampCierre = firebase.firestore.Timestamp.fromDate(fechaCierre);
 
                 this.ventas = todasLasVentas.filter(venta => {
-                    const esCompletada = venta.estado === 'completada' || venta.estado === 'pendiente';
+                    // 🚀 MEJORA PROFESIONAL: Considerar estado 'completada' o 'pendiente'
+                    const esValida = venta.estado === 'completada' || venta.estado === 'pendiente';
                     const dentroRango = venta.fecha >= timestampApertura && venta.fecha <= timestampCierre;
-                    return dentroRango;
+                    return dentroRango; // Mantenemos el array para el historial, pero renderEstadoCaja filtrará las canceladas
                 });
 
                 console.log(`✅ Ventas COMPLETADAS del turno: ${this.ventas.length}`);
@@ -1365,13 +1413,16 @@ El sistema continúa funcionando normalmente usando cache local.
 
 
         // Total de ventas (todos los métodos de pago) - SOLO PARA ESTADÍSTICAS
-        const totalVentas = this.ventas.reduce((sum, v) => sum + (v.total || 0), 0);
+        // 🚀 FILTRO PROFESIONAL: Excluir ventas canceladas del cálculo de caja
+        const ventasValidas = this.ventas.filter(v => v.estado !== 'cancelada');
+        
+        const totalVentas = ventasValidas.reduce((sum, v) => sum + (v.total || 0), 0);
 
         // ✅ DISCRIMINAR VENTAS POR MÉTODO DE PAGO
         // Usar trim() y toLowerCase() para evitar problemas de formato
         const getMetodo = (v) => (v.metodoPago || v.tipoPago || 'efectivo').toString().toLowerCase().trim();
 
-        const efectivoVentas = this.ventas
+        const efectivoVentas = ventasValidas
             .filter(v => getMetodo(v) === 'efectivo')
             .reduce((sum, v) => sum + (v.total || 0), 0);
 
